@@ -8,10 +8,21 @@ function endTurn() {
   advanceAllOccupations();
   updateSupply();
   state.year++;
+  advanceRoyalSuccession();
   state.orders = state.playerDefeated ? 0 : yearlyOrders('player');
   selectedTile = null;
   checkVictory();
   render();
+}
+function advanceRoyalSuccession() {
+  if (state.gameOver || state.playerDefeated || state.year < state.nextSuccessionYear) return false;
+  state.kingGeneration++;
+  state.nextSuccessionYear = state.year + royalReignLength(state.royalSeed, state.kingGeneration);
+  addLog(`第${state.kingGeneration}代国王が即位した。`, '', {
+    participants: ['player'],
+    important: true,
+  });
+  return true;
 }
 function checkVictory() {
   if (state.gameOver) return;
@@ -20,13 +31,17 @@ function checkVictory() {
     clearTimeout(autoSettlementTimer);
     state.victory = true;
     state.gameOver = true;
-    addLog('ついに100マスの全土が一つの王冠の下に統一された。', 'good', {
-      participants: ['player'],
-      important: true,
-    });
+    addLog(
+      `ついに第${state.kingGeneration}代国王の治世に、100マスの全土が一つの王冠の下に統一された。`,
+      'good',
+      {
+        participants: ['player'],
+        important: true,
+      },
+    );
     showDialog(
       '大陸統一',
-      `<p><strong>${state.year}年</strong>にわたる戦いの末、アルデン王国は100マスすべてを統一しました。</p>`,
+      `<p><strong>第${state.kingGeneration}代国王</strong>の治世、<strong>${state.year}年</strong>にわたる戦いの末、アルデン王国は100マスすべてを統一しました。</p>`,
       '年代記を見る',
       viewChronicle,
       'VICTORY',
@@ -181,7 +196,7 @@ else setTimeout(maybeOfferAutoSettlement, 0);
 if ('serviceWorker' in navigator)
   window.addEventListener('load', () =>
     navigator.serviceWorker
-      .register('sw.js?v=52', { updateViaCache: 'none' })
+      .register('sw.js?v=55', { updateViaCache: 'none' })
       .then((reg) => reg.update())
       .catch(() => {}),
   );

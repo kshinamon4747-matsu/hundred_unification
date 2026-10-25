@@ -105,6 +105,25 @@ function capitalZonesSeparated(seeds) {
       ),
   );
 }
+function royalSeedFor(tiles, worldName, developmentName) {
+  let hash = 2166136261;
+  const source = `${worldName}:${developmentName}:${tiles
+    .map((tile) => `${tile.owner[0]}${tile.terrain[0]}${tile.building?.[0] || '-'}`)
+    .join('')}`;
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+function royalReignLength(seed, generation) {
+  let value = (seed + Math.imul(generation, 0x9e3779b1)) >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x21f0aaad) >>> 0;
+  value = (value ^ (value >>> 15)) >>> 0;
+  const minimum = generation === 1 ? 5 : 15;
+  return minimum + (value % 11);
+}
 function createState() {
   const variants = WORLD_VARIANTS.filter((variant) => capitalZonesSeparated(variant.seeds)),
     variant = variants[rand(variants.length)],
@@ -131,8 +150,9 @@ function createState() {
       if (own[n] !== undefined) tiles[own[n]].building = building;
     });
   }
+  const royalSeed = royalSeedFor(tiles, variant.name, development.name);
   return {
-    version: 16,
+    version: 17,
     worldName: variant.name,
     developmentName: development.name,
     year: 1,
@@ -142,6 +162,9 @@ function createState() {
     army: 14,
     orders: 2,
     relocations: 0,
+    kingGeneration: 1,
+    royalSeed,
+    nextSuccessionYear: 1 + royalReignLength(royalSeed, 1),
     aiInitiativeOffset: rand(3),
     threatNotices: { leader: null, level: 0 },
     metrics: { captures: 0, rapidRecaptures: 0, repeatedRecaptures: 0 },
@@ -332,6 +355,7 @@ function importantChronicleText(text = '') {
     text.includes('覇権を争い始めた') ||
     text.includes('遷都し') ||
     text.includes('国家の存続に成功') ||
+    text.includes('代国王が即位') ||
     text.includes('崩壊') ||
     text.includes('滅亡') ||
     text.includes('100マス') ||
@@ -439,6 +463,13 @@ function migrate(s) {
   s.army = safeInteger(s.army, 14);
   s.orders = safeInteger(s.orders, 2);
   s.relocations = safeInteger(s.relocations, 0);
+  s.kingGeneration = safeInteger(s.kingGeneration, 1, 1);
+  s.royalSeed = Number.isFinite(s.royalSeed)
+    ? safeInteger(s.royalSeed, 0)
+    : royalSeedFor(s.tiles, s.worldName, s.developmentName);
+  if (oldVersion < 17 || !Number.isFinite(s.nextSuccessionYear) || s.nextSuccessionYear <= s.year)
+    s.nextSuccessionYear = s.year + royalReignLength(s.royalSeed, s.kingGeneration);
+  else s.nextSuccessionYear = safeInteger(s.nextSuccessionYear, s.year + 5, s.year + 1);
   if (!isRecord(s.metrics)) s.metrics = {};
   s.metrics.captures = safeInteger(s.metrics.captures, 0);
   s.metrics.rapidRecaptures = safeInteger(s.metrics.rapidRecaptures, 0);
@@ -494,7 +525,7 @@ function migrate(s) {
     delete t.unrest;
   });
   s.log = cleanChronicle(Array.isArray(s.log) ? s.log : []);
-  s.version = 16;
+  s.version = 17;
   return s;
 }
 function save() {

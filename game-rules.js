@@ -385,6 +385,7 @@ function runAutoSettlementYear() {
   advanceOccupations('player');
   updateSupply();
   state.year++;
+  advanceRoyalSuccession();
   state.orders = yearlyOrders('player');
   selectedTile = null;
   render();
