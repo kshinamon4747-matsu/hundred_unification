@@ -1,0 +1,10 @@
+{
+  "name": "100マス統一記",
+  "short_name": "100マス統一記",
+  "description": "20マスの小国から100マスの統一を目指す戦略ゲーム",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#17241e",
+  "theme_color": "#17241e",
+  "lang": "ja"
+}

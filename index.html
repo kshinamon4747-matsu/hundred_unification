@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#17241e" />
+    <meta name="description" content="20マスの小国から100マスの統一を目指すオフライン戦略ゲーム" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css?v=52" />
+    <title>100マス統一記</title>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header>
+      <div class="title-mark">
+        <span>♛</span>
+        <div>
+          <small>CHRONICLE OF UNIFICATION</small>
+          <h1>100マス統一記</h1>
+        </div>
+      </div>
+      <div class="turn">
+        <small>統一暦</small><strong><b id="year">1</b>年</strong>
+      </div>
+    </header>
+
+    <main>
+      <section class="resources" aria-label="自国の資源">
+        <div><small>金貨</small><strong id="gold">90</strong><em id="goldDelta">+0</em></div>
+        <div><small>食料</small><strong id="food">80</strong><em id="foodDelta">+0</em></div>
+        <div>
+          <small>民</small><strong id="population">18</strong
+          ><em id="popDelta">来年 最大+1／上限 30</em>
+        </div>
+        <div><small>兵力</small><strong id="army">14</strong><em id="armyDelta">維持 0</em></div>
+        <div class="orders"><small>残り命令</small><strong id="orders">2</strong><em>／年</em></div>
+        <div>
+          <small>統一率</small><strong><b id="unity">20</b>%</strong><em id="landCount">20領</em>
+        </div>
+      </section>
+
+      <section class="game-layout">
+        <aside class="panel nations-panel">
+          <div class="panel-title">
+            <span>Ⅰ</span>
+            <div>
+              <small>REALMS</small>
+              <h2>列国勢力</h2>
+            </div>
+          </div>
+          <div id="nations" class="nation-list"></div>
+          <div class="rules-note">
+            <strong>中立地帯</strong>
+            <p>国境に接した国が物資と命令を使って開拓できます。先に旗を立てた国の領土です。</p>
+          </div>
+          <div id="threatStatus" class="rules-note threat-note">
+            <strong>列国情勢</strong>
+            <p>最大国が35領以上かつ2位に5領差をつけると、列国の警戒が始まります。</p>
+          </div>
+        </aside>
+
+        <section class="board-wrap">
+          <div class="board-head">
+            <div><small>THE CONTINENT OF</small><strong id="worldName">エルデン大陸</strong></div>
+            <div class="legend">
+              <i class="player"></i>あなたの国 <i class="neutral"></i>中立
+              <i class="occupied"></i>保護・安定化中
+            </div>
+          </div>
+          <div id="map" class="map" role="grid" aria-label="10×10の大陸地図"></div>
+          <div class="map-note">色の太線が国境です。マスを選ぶと地形と守備を確認できます。</div>
+        </section>
+
+        <aside class="panel command-panel">
+          <div class="panel-title">
+            <span>Ⅱ</span>
+            <div>
+              <small>ROYAL COMMAND</small>
+              <h2>王命</h2>
+            </div>
+          </div>
+          <div id="selection" class="selection">
+            <small>選択中</small><strong>領地を選択してください</strong>
+            <p>地形や所有国を表示します</p>
+          </div>
+          <div id="mobileActions" class="mobile-actions" aria-live="polite"></div>
+          <div class="commands">
+            <button data-action="settle">
+              <span>⚑</span>
+              <div><strong>中立地を開拓</strong><small>金10・食8・民1</small></div>
+            </button>
+            <button data-action="invade">
+              <span>⚔</span>
+              <div><strong>他国へ侵攻</strong><small>兵力5以上</small></div>
+            </button>
+            <button id="recruitBtn">
+              <span>♟</span>
+              <div><strong>徴兵</strong><small>民3・金15・食8</small></div>
+            </button>
+            <button data-action="demolish">
+              <span>⌫</span>
+              <div><strong>建物撤去</strong><small>命令1・払い戻しなし</small></div>
+            </button>
+          </div>
+          <p class="subhead">領内建設</p>
+          <div id="buildings" class="build-grid"></div>
+          <button id="endTurnBtn" class="end-turn">
+            <span>年を進める</span><small>各国が行動します</small>
+          </button>
+          <div class="minor-actions">
+            <button id="helpBtn">遊び方</button><button id="newGameBtn">新しい大陸</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="chronicle-wrap">
+        <div class="chronicle-title">
+          <small>Ⅲ　THE GRAND CHRONICLE</small>
+          <h2>大陸年代記</h2>
+        </div>
+        <div id="chronicle" class="chronicle" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status"></div>
+    <dialog id="dialog">
+      <button class="close" aria-label="閉じる">×</button>
+      <small id="dialogEyebrow">王国評議会</small>
+      <h2 id="dialogTitle"></h2>
+      <div id="dialogBody"></div>
+      <div class="dialog-actions">
+        <button id="dialogAction" class="dialog-action">承知した</button>
+        <button id="dialogSecondary" class="dialog-secondary" hidden>新しい大陸へ</button>
+      </div>
+    </dialog>
+    <script src="game-state.js?v=52" defer></script>
+    <script src="game-ui.js?v=52" defer></script>
+    <script src="game-rules.js?v=52" defer></script>
+    <script src="game-ai.js?v=52" defer></script>
+    <script src="app.js?v=52" defer></script>
+  </body>
+</html>
