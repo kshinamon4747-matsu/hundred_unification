@@ -9,9 +9,9 @@
     <meta name="apple-mobile-web-app-title" content="100マス統一記" />
     <meta name="description" content="20マスの小国から100マスの統一を目指すオフライン戦略ゲーム" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=55" />
-    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=55" />
-    <link rel="stylesheet" href="styles.css?v=55" />
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=57" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=57" />
+    <link rel="stylesheet" href="styles.css?v=61" />
     <title>100マス統一記</title>
   </head>
   <body>
@@ -102,6 +102,10 @@
               <span>♟</span>
               <div><strong>徴兵</strong><small>民3・金15・食8</small></div>
             </button>
+            <button id="undoBtn">
+              <span>↶</span>
+              <div><strong>1手戻す</strong><small>戻せる命令はありません</small></div>
+            </button>
             <button data-action="demolish">
               <span>⌫</span>
               <div><strong>建物撤去</strong><small>命令1・払い戻しなし</small></div>
@@ -138,10 +142,10 @@
         <button id="dialogSecondary" class="dialog-secondary" hidden>新しい大陸へ</button>
       </div>
     </dialog>
-    <script src="game-state.js?v=55" defer></script>
-    <script src="game-ui.js?v=55" defer></script>
-    <script src="game-rules.js?v=55" defer></script>
-    <script src="game-ai.js?v=55" defer></script>
-    <script src="app.js?v=55" defer></script>
+    <script src="game-state.js?v=61" defer></script>
+    <script src="game-ui.js?v=61" defer></script>
+    <script src="game-rules.js?v=61" defer></script>
+    <script src="game-ai.js?v=61" defer></script>
+    <script src="app.js?v=61" defer></script>
   </body>
 </html>

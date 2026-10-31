@@ -55,8 +55,9 @@ function renderNations() {
   $('nations').innerHTML = IDS.map((id) => {
     const alive = id === 'player' ? !state.playerDefeated : state.factions[id].alive,
       s = stats(id),
-      intent = nationIntent(id, alive);
-    return `<article class="nation ${id} ${alive ? '' : 'dead'}"><div class="nation-head"><i class="nation-color" style="background:${COLORS[id]}"></i><strong>${META[id].name}</strong>${id === 'player' ? '<b class="you-badge">あなた</b>' : ''}<small>${alive ? META[id].trait : '滅亡'}</small></div>${intent ? `<div class="nation-intent ${intent.tone}"><span>◆</span>${intent.text}</div>` : ''}<div class="nation-stats"><span>領土 ${s.land}</span><span>兵力 ${s.army}</span><span>${s.towns + s.farms + s.barracks + s.forts}施設</span></div></article>`;
+      intent = nationIntent(id, alive),
+      fatigue = id !== 'player' && alive ? warFatigueStatus(id, 'player') : null;
+    return `<article class="nation ${id} ${alive ? '' : 'dead'}"><div class="nation-head"><i class="nation-color" style="background:${COLORS[id]}"></i><strong>${META[id].name}</strong>${id === 'player' ? '<b class="you-badge">あなた</b>' : ''}<small>${alive ? META[id].trait : '滅亡'}</small></div>${intent ? `<div class="nation-intent ${intent.tone}"><span>◆</span>${intent.text}</div>` : ''}${fatigue ? `<div class="nation-fatigue ${fatigue.tone}">対アルデン：<strong>${fatigue.text}</strong></div>` : ''}<div class="nation-stats"><span>領土 ${s.land}</span><span>兵力 ${s.army}</span><span>${s.towns + s.farms + s.barracks + s.forts}施設</span></div></article>`;
   }).join('');
 }
 function threatRanking() {
@@ -137,6 +138,8 @@ function renderCommands() {
     }),
   );
   $('recruitBtn').disabled = !playerRecruitStatus().ok;
+  $('undoBtn').disabled = !canUndoPlayerAction();
+  $('undoBtn').querySelector('small').textContent = playerUndoDescription();
   $('endTurnBtn').disabled = state.gameOver || state.autoSettlement;
   $('endTurnBtn').querySelector('span').textContent = state.autoSettlement
     ? '自動開拓中'
@@ -167,10 +170,12 @@ function renderMobileActions() {
     box.innerHTML = '<div class="mobile-empty">命令を出せる王国はありません</div>';
     return;
   }
-  const recruitButton = `<button data-mobile-recruit ${playerRecruitStatus().ok ? '' : 'disabled'}><strong>♟ 徴兵</strong><small>民3・金15・食8</small></button>`;
+  const recruitButton = `<button data-mobile-recruit ${playerRecruitStatus().ok ? '' : 'disabled'}><strong>♟ 徴兵</strong><small>民3・金15・食8</small></button>`,
+    undoButton = `<button data-mobile-undo ${canUndoPlayerAction() ? '' : 'disabled'}><strong>↶ 1手戻す</strong><small>${playerUndoDescription()}</small></button>`;
   if (selectedTile === null) {
-    box.innerHTML = `<div class="mobile-empty">先に地図のマスを選択してください</div><div class="mobile-action-grid">${recruitButton}</div>`;
+    box.innerHTML = `<div class="mobile-empty">先に地図のマスを選択してください</div><div class="mobile-action-grid">${recruitButton}${undoButton}</div>`;
     box.querySelector('[data-mobile-recruit]')?.addEventListener('click', recruit);
+    box.querySelector('[data-mobile-undo]')?.addEventListener('click', undoLastPlayerAction);
     return;
   }
   const t = state.tiles[selectedTile],
@@ -192,6 +197,7 @@ function renderMobileActions() {
       '<button class="mobile-build-toggle" data-mobile-build-toggle><strong>♜ 建設</strong><small>施設を選択</small></button>',
     );
   actions.push(recruitButton);
+  actions.push(undoButton);
   const townCount = state.tiles.filter(
       (tile) => tile.owner === 'player' && tile.building === 'town',
     ).length,
@@ -217,6 +223,7 @@ function renderMobileActions() {
     render();
   });
   box.querySelector('[data-mobile-recruit]')?.addEventListener('click', recruit);
+  box.querySelector('[data-mobile-undo]')?.addEventListener('click', undoLastPlayerAction);
 }
 function renderSelection() {
   if (selectedTile === null) {

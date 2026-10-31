@@ -76,7 +76,9 @@ let state,
   mobileBuildOpen = false,
   autoSettlementTimer,
   autoSettlementOfferShown = false,
-  autoSettlementIdleYears = 0;
+  autoSettlementIdleYears = 0,
+  playerUndoStack = [],
+  playerRedoEntry = null;
 const $ = (id) => document.getElementById(id),
   rand = (n) => Math.floor(Math.random() * n),
   clamp = (n, a, b) => Math.max(a, Math.min(b, n));
@@ -94,6 +96,17 @@ const shuffle = (a) => {
 const neighbors = (i) =>
   [i - 10, i + 10, i % 10 ? i - 1 : -1, i % 10 < 9 ? i + 1 : -1].filter((x) => x >= 0 && x < 100);
 const land = (id) => state.tiles.filter((t) => t.owner === id).length;
+
+function emptyWarFatigue() {
+  return Object.fromEntries(
+    IDS.map((id) => [
+      id,
+      Object.fromEntries(
+        IDS.filter((opponent) => opponent !== id).map((opponent) => [opponent, 0]),
+      ),
+    ]),
+  );
+}
 
 function capitalZonesSeparated(seeds) {
   return seeds.every((a, i) =>
@@ -152,7 +165,7 @@ function createState() {
   }
   const royalSeed = royalSeedFor(tiles, variant.name, development.name);
   return {
-    version: 17,
+    version: 18,
     worldName: variant.name,
     developmentName: development.name,
     year: 1,
@@ -168,6 +181,8 @@ function createState() {
     aiInitiativeOffset: rand(3),
     threatNotices: { leader: null, level: 0 },
     metrics: { captures: 0, rapidRecaptures: 0, repeatedRecaptures: 0 },
+    warFatigue: emptyWarFatigue(),
+    warLastBattle: {},
     autoSettlement: false,
     autoSettlementDeclined: false,
     tiles,
@@ -474,6 +489,19 @@ function migrate(s) {
   s.metrics.captures = safeInteger(s.metrics.captures, 0);
   s.metrics.rapidRecaptures = safeInteger(s.metrics.rapidRecaptures, 0);
   s.metrics.repeatedRecaptures = safeInteger(s.metrics.repeatedRecaptures, 0);
+  const fatigue = emptyWarFatigue();
+  if (isRecord(s.warFatigue))
+    for (const id of IDS)
+      for (const opponent of IDS)
+        if (id !== opponent)
+          fatigue[id][opponent] = Math.min(100, safeInteger(s.warFatigue[id]?.[opponent], 0));
+  s.warFatigue = fatigue;
+  if (!isRecord(s.warLastBattle)) s.warLastBattle = {};
+  s.warLastBattle = Object.fromEntries(
+    Object.entries(s.warLastBattle)
+      .filter(([, year]) => Number.isFinite(year))
+      .map(([pair, year]) => [pair, safeInteger(year, 0)]),
+  );
   s.aiInitiativeOffset = Number.isFinite(s.aiInitiativeOffset)
     ? safeInteger(s.aiInitiativeOffset) % 3
     : rand(3);
@@ -525,7 +553,7 @@ function migrate(s) {
     delete t.unrest;
   });
   s.log = cleanChronicle(Array.isArray(s.log) ? s.log : []);
-  s.version = 17;
+  s.version = 18;
   return s;
 }
 function save() {

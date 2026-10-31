@@ -1,16 +1,16 @@
-const CACHE = 'hundred-tile-unification-v55';
+const CACHE = 'hundred-tile-unification-v61';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=55',
-  './game-state.js?v=55',
-  './game-ui.js?v=55',
-  './game-rules.js?v=55',
-  './game-ai.js?v=55',
-  './app.js?v=55',
-  './apple-touch-icon.png?v=55',
-  './icons/icon-192.png?v=55',
-  './icons/icon-512.png?v=55',
+  './styles.css?v=61',
+  './game-state.js?v=61',
+  './game-ui.js?v=61',
+  './game-rules.js?v=61',
+  './game-ai.js?v=61',
+  './app.js?v=61',
+  './apple-touch-icon.png?v=61',
+  './icons/icon-192.png?v=61',
+  './icons/icon-512.png?v=61',
   './manifest.webmanifest',
 ];
 self.addEventListener('install', (e) =>

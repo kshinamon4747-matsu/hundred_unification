@@ -45,6 +45,14 @@ function shouldAvoidContestedTarget(id, i) {
   const t = state.tiles[i];
   return recentCaptureCount(t) >= 2 && !t.capital && !threatensOwnCapital(id, i);
 }
+function ignoresWarFatigue(id, i) {
+  return threatensOwnCapital(id, i) || state.tiles[i].capital;
+}
+function warFatiguePriorityPenalty(id, i) {
+  if (ignoresWarFatigue(id, i)) return 0;
+  const fatigue = warFatigueValue(id, state.tiles[i].owner);
+  return fatigue >= 30 ? (fatigue - 20) * 0.4 : 0;
+}
 function targetScore(id, i) {
   const t = state.tiles[i],
     owner = t.owner,
@@ -72,6 +80,7 @@ function targetScore(id, i) {
   if (t.building === profile.preferredTarget) score += profile.targetBias;
   score += (Math.floor(f.army * 0.68) + support(i, id) - tileDefense(i)) * 1.4;
   if (owner === threatLeader() && owner !== id && threatLevel() === 1) score += 30;
+  score -= warFatiguePriorityPenalty(id, i);
   return score;
 }
 const AI_PROFILE = {
@@ -101,7 +110,7 @@ const AI_PROFILE = {
   },
   blue: {
     style: 'commercial',
-    attack: 0.62,
+    attack: 0.65,
     normal: 1.08,
     strategic: 0.94,
     reserve: 18,
@@ -110,7 +119,9 @@ const AI_PROFILE = {
     recruitRatio: 0.75,
     recruitFood: 34,
     minRecruitPopulation: 10,
-    maxRecruit: 1,
+    maxRecruit: 2,
+    secondRecruitPopulation: 18,
+    secondRecruitChance: 0.3,
     settle: 0.5,
     farmLand: 6,
     townLand: 7,
@@ -218,7 +229,8 @@ function canRecruitThisAction(id, turn) {
     f = state.factions[id];
   return (
     turn.recruits < profile.maxRecruit &&
-    (turn.recruits === 0 || f.population >= (profile.secondRecruitPopulation || Infinity))
+    (turn.recruits === 0 ||
+      (turn.secondRecruitAllowed && f.population >= (profile.secondRecruitPopulation || Infinity)))
   );
 }
 function aiBuildChoice(id) {
@@ -450,6 +462,9 @@ function runAiYear() {
         attacks: 0,
         attackFailed: false,
         recruits: 0,
+        secondRecruitAllowed:
+          AI_PROFILE[id].secondRecruitChance == null ||
+          Math.random() < AI_PROFILE[id].secondRecruitChance,
         built: false,
         demolished: false,
       };
@@ -470,11 +485,15 @@ function aiInvade(id, i, reason = '') {
     def = tileDefense(i) + rand(5),
     attack = Math.floor(f.army * 0.68) + support(i, id) + rand(5);
   if (attack >= def) {
-    const loss = Math.max(1, Math.ceil(def / 5));
-    f.army = Math.max(0, f.army - loss);
-    if (loser === 'player') state.army = Math.max(0, state.army - Math.ceil(loss / 2));
+    const loss = Math.max(1, Math.ceil(def / 5)),
+      attackerBefore = f.army,
+      defenderBefore = loser === 'player' ? state.army : state.factions[loser]?.army || 0;
+    f.army = Math.max(0, attackerBefore - loss);
+    if (loser === 'player') state.army = Math.max(0, defenderBefore - Math.ceil(loss / 2));
     else if (state.factions[loser])
-      state.factions[loser].army = Math.max(0, state.factions[loser].army - Math.ceil(loss / 2));
+      state.factions[loser].army = Math.max(0, defenderBefore - Math.ceil(loss / 2));
+    const defenderAfter = loser === 'player' ? state.army : state.factions[loser]?.army || 0;
+    recordWarBattle(id, loser, attackerBefore - f.army, defenderBefore - defenderAfter);
     if (reason !== 'capital-defense' || loser === 'player')
       addLog(
         reason === 'capital-defense'
@@ -487,7 +506,9 @@ function aiInvade(id, i, reason = '') {
     return true;
   }
   const loss = Math.max(2, Math.ceil(def / 3));
-  f.army = Math.max(0, f.army - loss);
+  const attackerBefore = f.army;
+  f.army = Math.max(0, attackerBefore - loss);
+  recordWarBattle(id, loser, attackerBefore - f.army, 0);
   if (reason === 'capital-defense' && loser === 'player')
     addLog(
       `${META[id].name}の首都防衛反撃は${META[loser].name}に阻まれ、兵${loss}人を失った。`,

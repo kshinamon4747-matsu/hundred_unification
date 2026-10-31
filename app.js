@@ -2,9 +2,11 @@
 
 function endTurn() {
   if (state.gameOver || state.autoSettlement) return;
+  clearPlayerUndo();
   if (!state.playerDefeated) produce('player');
   updateThreatNotices();
   runAiYear();
+  advanceWarFatigue();
   advanceAllOccupations();
   updateSupply();
   state.year++;
@@ -75,6 +77,7 @@ function gameOver(reason) {
   state.autoSettlement = false;
   clearTimeout(autoSettlementTimer);
   state.playerDefeated = true;
+  clearWarFatigueFor('player');
   state.orders = 0;
   state.army = 0;
   state.tiles.forEach((t) => {
@@ -153,6 +156,7 @@ function newGame(force = false) {
     mobileBuildOpen = false;
     autoSettlementOfferShown = false;
     autoSettlementIdleYears = 0;
+    clearPlayerUndo();
     render();
     toast(`${state.worldName}・${state.developmentName}で開戦しました`);
   };
@@ -173,6 +177,7 @@ document.querySelectorAll('[data-action]').forEach((b) =>
   }),
 );
 $('recruitBtn').addEventListener('click', recruit);
+$('undoBtn').addEventListener('click', undoLastPlayerAction);
 $('endTurnBtn').addEventListener('click', endTurn);
 $('helpBtn').addEventListener('click', help);
 $('newGameBtn').addEventListener('click', () => newGame());
@@ -196,7 +201,7 @@ else setTimeout(maybeOfferAutoSettlement, 0);
 if ('serviceWorker' in navigator)
   window.addEventListener('load', () =>
     navigator.serviceWorker
-      .register('sw.js?v=55', { updateViaCache: 'none' })
+      .register('sw.js?v=61', { updateViaCache: 'none' })
       .then((reg) => reg.update())
       .catch(() => {}),
   );

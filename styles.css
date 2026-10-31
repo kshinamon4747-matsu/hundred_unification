@@ -26,6 +26,7 @@ body {
 }
 button {
   font: inherit;
+  color: inherit;
 }
 .grain {
   position: fixed;
@@ -252,6 +253,25 @@ main {
   background: #bad0bc;
   color: #31543a;
 }
+.nation-fatigue {
+  margin-top: 5px;
+  font:
+    8px Arial,
+    sans-serif;
+  color: #686251;
+}
+.nation-fatigue strong {
+  font-size: inherit;
+}
+.nation-fatigue.prolonged strong {
+  color: #81642c;
+}
+.nation-fatigue.spent strong {
+  color: #854630;
+}
+.nation-fatigue.weary strong {
+  color: #7b312c;
+}
 .nation-stats {
   display: flex;
   justify-content: space-between;
@@ -344,6 +364,7 @@ main {
     filter 0.14s,
     transform 0.1s;
   background: color-mix(in srgb, var(--owner) 29%, #98a66e);
+  color: var(--ink);
 }
 .tile.forest {
   background: color-mix(in srgb, var(--owner) 30%, #51724c);
@@ -997,7 +1018,7 @@ dialog ul {
   padding: 8px;
   border: 1px solid rgba(64, 59, 38, 0.3);
   background: rgba(255, 255, 255, 0.3);
-  color: inherit;
+  color: var(--ink);
   text-align: center;
   cursor: pointer;
 }
