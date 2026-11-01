@@ -253,6 +253,10 @@ main {
   background: #bad0bc;
   color: #31543a;
 }
+.nation-intent.peace {
+  background: #b9ced0;
+  color: #31575b;
+}
 .nation-fatigue {
   margin-top: 5px;
   font:
@@ -272,6 +276,13 @@ main {
 .nation-fatigue.weary strong {
   color: #7b312c;
 }
+.nation-diplomacy {
+  margin-top: 5px;
+  color: #365d61;
+  font:
+    8px Arial,
+    sans-serif;
+}
 .nation-stats {
   display: flex;
   justify-content: space-between;
@@ -280,6 +291,21 @@ main {
     9px Arial,
     sans-serif;
   color: #676454;
+}
+.ceasefire-button {
+  width: 100%;
+  margin-top: 7px;
+  padding: 5px 7px;
+  border: 1px solid rgba(49, 87, 91, 0.42);
+  border-radius: 3px;
+  background: rgba(185, 206, 208, 0.65);
+  color: #263f42;
+  font:
+    9px Arial,
+    sans-serif;
+}
+.ceasefire-button:disabled {
+  opacity: 0.48;
 }
 .rules-note {
   margin-top: 15px;
@@ -371,6 +397,55 @@ main {
 }
 .tile.hill {
   background: color-mix(in srgb, var(--owner) 28%, #9b8b62);
+}
+.tile.fertile {
+  background: color-mix(in srgb, var(--owner) 24%, #b6bc6e);
+}
+.tile.marsh {
+  background: color-mix(in srgb, var(--owner) 20%, #718b78);
+}
+.tile.pass {
+  background: color-mix(in srgb, var(--owner) 22%, #b49a70);
+}
+.tile.mountain {
+  background: linear-gradient(145deg, #6c5540, #9a7a58 48%, #584738);
+  color: #f0e2c5;
+  cursor: default;
+}
+.tile.mountain .terrain {
+  color: #f3e5c8;
+  text-shadow: 0 1px 2px #443326;
+}
+.tile.water {
+  background: linear-gradient(145deg, #3f7187, #5790a5);
+  color: #d8edf2;
+  cursor: default;
+}
+.tile.river,
+.tile.ford,
+.tile.bridge {
+  background: linear-gradient(90deg, #43798f, #66a0b3, #43798f);
+  color: #e1f3f5;
+  cursor: default;
+}
+.tile.river-horizontal.river,
+.tile.river-horizontal.ford,
+.tile.river-horizontal.bridge {
+  background: linear-gradient(0deg, #43798f, #66a0b3, #43798f);
+}
+.tile.ford {
+  background: linear-gradient(90deg, #687b7d, #9da5a1, #687b7d);
+}
+.tile.river-horizontal.ford {
+  background: linear-gradient(0deg, #687b7d, #9da5a1, #687b7d);
+}
+.tile.ford .terrain {
+  color: #e6d7aa;
+  text-shadow: 0 1px 2px #284e5c;
+}
+.tile.bridge .terrain {
+  color: #6f4c31;
+  text-shadow: 0 1px 0 #d7c39e;
 }
 .tile:hover {
   filter: brightness(1.16);

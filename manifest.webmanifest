@@ -1,7 +1,7 @@
 {
   "name": "100マス統一記",
   "short_name": "100マス統一記",
-  "description": "20マスの小国から100マスの統一を目指す戦略ゲーム",
+  "description": "川や山を越え、100マスの大陸統一を目指す戦略ゲーム",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#17241e",
@@ -9,13 +9,13 @@
   "lang": "ja",
   "icons": [
     {
-      "src": "icons/icon-192.png",
+      "src": "icons/icon-192.png?v=72",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "icons/icon-512.png",
+      "src": "icons/icon-512.png?v=72",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

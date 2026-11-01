@@ -4,7 +4,7 @@ function borderTargets(id, ownerTest) {
   const out = new Set();
   state.tiles.forEach((t, i) => {
     if (t.owner === id && !t.occupation)
-      neighbors(i).forEach((n) => {
+      movementNeighbors(i).forEach((n) => {
         if (ownerTest(state.tiles[n].owner)) out.add(n);
       });
   });
@@ -16,7 +16,7 @@ function capitalConnectedCount(owner, skip = -1) {
   const seen = new Set([capital]),
     queue = [capital];
   while (queue.length) {
-    for (const n of neighbors(queue.shift()))
+    for (const n of movementNeighbors(queue.shift()))
       if (n !== skip && state.tiles[n].owner === owner && !seen.has(n)) {
         seen.add(n);
         queue.push(n);
@@ -50,7 +50,9 @@ function ignoresWarFatigue(id, i) {
 }
 function warFatiguePriorityPenalty(id, i) {
   if (ignoresWarFatigue(id, i)) return 0;
-  const fatigue = warFatigueValue(id, state.tiles[i].owner);
+  const owner = state.tiles[i].owner;
+  if (isSanctioned(owner) && owner !== id) return 0;
+  const fatigue = warFatigueValue(id, owner);
   return fatigue >= 30 ? (fatigue - 20) * 0.4 : 0;
 }
 function targetScore(id, i) {
@@ -71,32 +73,37 @@ function targetScore(id, i) {
   else if (capital >= 0) {
     const d = distance(i, capital);
     score += Math.max(0, 28 - d * 4);
-    if (neighbors(i).includes(capital)) score += 42;
+    if (movementNeighbors(i).includes(capital)) score += 42;
   }
   if (t.building && t.building !== 'capital') score += BUILDINGS[t.building]?.cost / 6 || 0;
+  score -= crossingDefenseBonus(id, i) * 8;
+  score -= terrainInvasionLoss(t) * 14;
+  if (t.building === 'farm') score += Math.max(0, terrainFarmFood(t) - BUILDINGS.farm.food) * 4;
   if (shouldAvoidContestedTarget(id, i)) score -= 180;
-  if (t.capital || (capital >= 0 && neighbors(i).includes(capital))) score += profile.capitalBias;
+  if (t.capital || (capital >= 0 && movementNeighbors(i).includes(capital)))
+    score += profile.capitalBias;
   if (cut) score += profile.cutBias * cut;
   if (t.building === profile.preferredTarget) score += profile.targetBias;
   score += (Math.floor(f.army * 0.68) + support(i, id) - tileDefense(i)) * 1.4;
   if (owner === threatLeader() && owner !== id && threatLevel() === 1) score += 30;
+  if (isSanctioned(owner) && owner !== id) score += 90;
   score -= warFatiguePriorityPenalty(id, i);
   return score;
 }
 const AI_PROFILE = {
   red: {
     style: 'offensive',
-    attack: 0.78,
+    attack: 0.72,
     normal: 1.02,
     strategic: 0.9,
     reserve: 13,
     armyScale: 0.84,
-    armyBase: 6,
+    armyBase: 7,
     recruitRatio: 0.8,
     recruitFood: 26,
     minRecruitPopulation: 8,
     maxRecruit: 2,
-    secondRecruitPopulation: 14,
+    secondRecruitPopulation: 13,
     settle: 0.48,
     farmLand: 6,
     townLand: 7,
@@ -121,7 +128,7 @@ const AI_PROFILE = {
     minRecruitPopulation: 10,
     maxRecruit: 2,
     secondRecruitPopulation: 18,
-    secondRecruitChance: 0.3,
+    secondRecruitChance: 0.2,
     settle: 0.5,
     farmLand: 6,
     townLand: 7,
@@ -166,7 +173,7 @@ function strategicTarget(id, i) {
     t.isolation ||
     t.capital ||
     supplyCutValue(i, t.owner) ||
-    (capital >= 0 && neighbors(i).includes(capital))
+    (capital >= 0 && movementNeighbors(i).includes(capital))
   );
 }
 function aiArmyGoal(id) {
@@ -180,9 +187,9 @@ function shouldAiAttack(id, i) {
     capitalDefense = threatensOwnCapital(id, i),
     strategic = strategicTarget(id, i),
     expectedAttack = Math.floor(f.army * 0.68) + support(i, id) + 3,
-    expectedDefense = tileDefense(i) + 3,
+    expectedDefense = tileDefense(i) + crossingDefenseBonus(id, i) + 3,
     ratio = expectedAttack / Math.max(1, expectedDefense),
-    expectedLoss = Math.max(1, Math.ceil(expectedDefense / 5)),
+    expectedLoss = Math.max(1, Math.ceil(expectedDefense / 5)) + terrainLossPenalty(i),
     reserve = capitalDefense
       ? Math.max(3, Math.ceil(land(id) / 10))
       : Math.max(profile.reserve, Math.ceil(land(id) / 4)),
@@ -193,7 +200,13 @@ function shouldAiAttack(id, i) {
         : strategic
           ? profile.strategic
           : profile.normal) - latePressure;
-  if (t.occupation === 2 || shouldAvoidContestedTarget(id, i) || f.army < 7 || ratio < threshold)
+  if (
+    activeCeasefire(id, t.owner) ||
+    t.occupation === 2 ||
+    shouldAvoidContestedTarget(id, i) ||
+    f.army < 7 ||
+    ratio < threshold
+  )
     return false;
   return t.capital || f.army - expectedLoss >= reserve;
 }
@@ -264,11 +277,15 @@ function chooseAiBuildTile(id, building) {
   if (!own.length) return -1;
   return own
     .map((i) => {
-      const enemyEdges = neighbors(i).filter(
+      const enemyEdges = movementNeighbors(i).filter(
           (n) => !['neutral', id].includes(state.tiles[n].owner),
         ).length,
         border = enemyEdges > 0;
       let score = Math.random() * 4;
+      if (building === 'farm') {
+        const foodDifference = terrainFarmFood(state.tiles[i]) - BUILDINGS.farm.food;
+        score += foodDifference >= 0 ? foodDifference * 14 : foodDifference * 9;
+      }
       if (['fort', 'barracks'].includes(building))
         score += enemyEdges * 12 + (capital >= 0 ? Math.max(0, 6 - distance(i, capital)) : 0);
       else if (!border) score += 8;
@@ -284,7 +301,9 @@ function strategicFortTile(id) {
   if (!own.length) return -1;
   const scored = own
     .map((i) => {
-      const enemies = neighbors(i).filter((n) => !['neutral', id].includes(state.tiles[n].owner)),
+      const enemies = movementNeighbors(i).filter(
+          (n) => !['void', 'neutral', id].includes(state.tiles[n].owner),
+        ),
         countries = new Set(enemies.map((n) => state.tiles[n].owner));
       return {
         i,
@@ -342,6 +361,73 @@ function buildAi(id) {
   f.gold -= b.cost;
   return true;
 }
+function ownedRouteDistance(id, start, goal) {
+  const seen = new Set([start]),
+    queue = [{ i: start, distance: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    if (current.i === goal) return current.distance;
+    for (const n of movementNeighbors(current.i)) {
+      const tile = state.tiles[n];
+      if (tile.owner === id && !tile.occupation && !seen.has(n)) {
+        seen.add(n);
+        queue.push({ i: n, distance: current.distance + 1 });
+      }
+    }
+  }
+  return Infinity;
+}
+function aiBridgeSiteScore(id, i) {
+  if (!bridgeSiteStatus(id, i).ok) return -Infinity;
+  const banks = axisBanks(i, state.tiles[i].riverAxis),
+    connected = capitalConnectedStableTiles(id);
+  let score = -Infinity;
+  for (let side = 0; side < 2; side++) {
+    const source = banks[side],
+      opposite = banks[1 - side],
+      target = state.tiles[opposite];
+    if (!connected.has(source) || state.tiles[source].occupation) continue;
+    if (target.owner === 'neutral') {
+      const alreadyReachable = movementNeighbors(opposite).some(
+          (n) => state.tiles[n].owner === id && !state.tiles[n].occupation,
+        ),
+        onward = movementNeighbors(opposite).filter(
+          (n) => !['void', id].includes(state.tiles[n].owner),
+        ).length;
+      score = Math.max(score, 38 + onward * 5 - (alreadyReachable ? 18 : 0));
+    } else if (target.owner === id && !target.occupation) {
+      const route = ownedRouteDistance(id, source, opposite);
+      if (Number.isFinite(route)) score = Math.max(score, (route - 1) * 7);
+    }
+  }
+  return score;
+}
+function chooseAiBridgeSite(id) {
+  return (
+    state.tiles
+      .map((tile, i) => ({
+        i,
+        score: tile.terrain === 'river' ? aiBridgeSiteScore(id, i) : -Infinity,
+      }))
+      .filter((site) => site.score >= 28)
+      .sort((a, b) => b.score - a.score + (Math.random() - 0.5))[0]?.i ?? -1
+  );
+}
+function buildAiBridge(id) {
+  const faction = state.factions[id],
+    i = chooseAiBridgeSite(id);
+  if (
+    i < 0 ||
+    faction.gold < BRIDGE_COST.gold + AI_PROFILE[id].reserve ||
+    faction.food < BRIDGE_COST.food ||
+    !constructBridge(id, i)
+  )
+    return false;
+  addLog(`${META[id].name}が川に橋を架け、新たな進路を開いた。`, '', {
+    participants: [id],
+  });
+  return true;
+}
 function settleAi(id, neutral) {
   const f = state.factions[id];
   if (!neutral.length || f.gold < 10 || f.food < 8 || f.population <= 2) return false;
@@ -387,12 +473,53 @@ function invadeForAi(id, target, turn, reason = '') {
   turn.attackFailed = !aiInvade(id, target, reason);
   return true;
 }
+function aiBetrayalTarget(id) {
+  const partner = ceasefirePartner(id),
+    f = state.factions[id];
+  if (!partner || isSanctioned(id) || !f?.alive) return null;
+  const ownCapital = state.tiles.findIndex((tile) => tile.owner === id && tile.capital),
+    otherEnemies = state.tiles.some(
+      (tile, index) =>
+        !['neutral', id, partner].includes(tile.owner) &&
+        ownCapital >= 0 &&
+        distance(index, ownCapital) <= 2,
+    );
+  if (otherEnemies) return null;
+  const decisive = land(partner) <= 5 || land(id) >= Math.ceil(conquerableLand() * 0.6),
+    reserve = Math.max(AI_PROFILE[id].reserve + 4, Math.ceil(land(id) / 4)),
+    targets = borderTargets(id, (owner) => owner === partner)
+      .map((i) => {
+        const defense = tileDefense(i) + crossingDefenseBonus(id, i) + 2,
+          attack = Math.floor(f.army * 0.68) + support(i, id) + 4,
+          expectedLoss = Math.max(1, Math.ceil(defense / 5)) + terrainLossPenalty(i),
+          capital = state.tiles[i].capital;
+        return {
+          i,
+          capital,
+          viable:
+            (capital || decisive) &&
+            attack / Math.max(1, defense) >= 1.25 &&
+            f.army - expectedLoss >= reserve,
+          score: (capital ? 1000 : 0) + targetScore(id, i),
+        };
+      })
+      .filter((target) => target.viable)
+      .sort((a, b) => b.score - a.score);
+  return targets[0]?.i ?? null;
+}
 function aiAction(id, turn, action) {
   const f = state.factions[id];
   if (!f?.alive) return false;
   const profile = AI_PROFILE[id];
+  if (!turn.betrayalConsidered) {
+    turn.betrayalConsidered = true;
+    const betrayal = aiBetrayalTarget(id);
+    if (betrayal !== null) return invadeForAi(id, betrayal, turn, 'betrayal');
+  }
   const neutral = borderTargets(id, (o) => o === 'neutral'),
-    enemies = borderTargets(id, (o) => o !== id && o !== 'neutral');
+    enemies = borderTargets(id, (o) => o !== id && o !== 'neutral').filter(
+      (i) => !activeCeasefire(id, state.tiles[i].owner),
+    );
   const leader = threatLeader(),
     level = threatLevel(),
     coalitionTargets = enemies.filter((i) => state.tiles[i].owner === leader && leader !== id);
@@ -417,7 +544,9 @@ function aiAction(id, turn, action) {
     turn.built = true;
     return true;
   }
-  const strategicTargets = enemies.filter((i) => strategicTarget(id, i)),
+  const strategicTargets = enemies.filter(
+      (i) => strategicTarget(id, i) || isSanctioned(state.tiles[i].owner),
+    ),
     strategic = !turn.attackFailed ? chooseAiTarget(id, strategicTargets) : null;
   if (invadeForAi(id, strategic, turn)) return true;
   const coalitionTarget = !turn.attackFailed ? chooseAiTarget(id, coalitionTargets) : null;
@@ -425,6 +554,10 @@ function aiAction(id, turn, action) {
     return invadeForAi(id, coalitionTarget, turn);
   if (canRecruitThisAction(id, turn) && shouldPrioritizeRecruit(id) && recruitAi(id)) {
     turn.recruits++;
+    return true;
+  }
+  if (!turn.built && buildAiBridge(id)) {
+    turn.built = true;
     return true;
   }
   if (!turn.demolished && demolishUnusedAiFort(id, turn)) return true;
@@ -467,6 +600,7 @@ function runAiYear() {
           Math.random() < AI_PROFILE[id].secondRecruitChance,
         built: false,
         demolished: false,
+        betrayalConsidered: false,
       };
     }
   const rounds = Math.max(0, ...Object.values(turns).map((t) => t.actions));
@@ -478,14 +612,42 @@ function runAiYear() {
       if (state.gameOver) break;
     }
 }
+function runAiCeasefireDiplomacy() {
+  const pairs = [
+      ['red', 'blue'],
+      ['blue', 'ochre'],
+      ['ochre', 'red'],
+    ],
+    offset = (state.year - 1 + (state.aiInitiativeOffset || 0)) % pairs.length,
+    ordered = pairs.slice(offset).concat(pairs.slice(0, offset));
+  for (const [a, b] of ordered)
+    if (
+      ceasefireProposalStatus(a, b).ok &&
+      ceasefireWillingness(a, b) >= 40 &&
+      ceasefireWillingness(b, a) >= 40
+    )
+      beginCeasefire(a, b);
+}
+function aiCeasefireOfferToPlayer() {
+  if (state.playerDefeated || state.gameOver) return null;
+  return ['red', 'blue', 'ochre']
+    .filter(
+      (id) => ceasefireProposalStatus(id, 'player').ok && ceasefireWillingness(id, 'player') >= 55,
+    )
+    .map((id) => ({ id, score: ceasefireWillingness(id, 'player') }))
+    .sort((a, b) => b.score - a.score)[0]?.id;
+}
 function aiInvade(id, i, reason = '') {
   const f = state.factions[id],
     t = state.tiles[i],
     loser = t.owner,
-    def = tileDefense(i) + rand(5),
-    attack = Math.floor(f.army * 0.68) + support(i, id) + rand(5);
+    betrayal = reason === 'betrayal' && activeCeasefire(id, loser),
+    def = tileDefense(i) + crossingDefenseBonus(id, i) + rand(5),
+    attack = Math.floor(f.army * 0.68) + support(i, id) + rand(5) + (betrayal ? 2 : 0);
+  if (activeCeasefire(id, loser) && !betrayal) return false;
+  if (betrayal) breakCeasefire(id, loser);
   if (attack >= def) {
-    const loss = Math.max(1, Math.ceil(def / 5)),
+    const loss = Math.max(1, Math.ceil(def / 5)) + terrainLossPenalty(i),
       attackerBefore = f.army,
       defenderBefore = loser === 'player' ? state.army : state.factions[loser]?.army || 0;
     f.army = Math.max(0, attackerBefore - loss);
@@ -505,7 +667,7 @@ function aiInvade(id, i, reason = '') {
     capture(i, id);
     return true;
   }
-  const loss = Math.max(2, Math.ceil(def / 3));
+  const loss = Math.max(2, Math.ceil(def / 3)) + terrainLossPenalty(i);
   const attackerBefore = f.army;
   f.army = Math.max(0, attackerBefore - loss);
   recordWarBattle(id, loser, attackerBefore - f.army, 0);
@@ -530,7 +692,7 @@ function updateSupply() {
       connected.add(capital);
       while (queue.length) {
         const current = queue.shift();
-        for (const n of neighbors(current)) {
+        for (const n of movementNeighbors(current)) {
           if (state.tiles[n].owner === id && !connected.has(n)) {
             connected.add(n);
             queue.push(n);

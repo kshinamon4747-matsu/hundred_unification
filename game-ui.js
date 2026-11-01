@@ -10,8 +10,9 @@ function render() {
   $('population').textContent = state.population;
   $('army').textContent = state.army;
   $('orders').textContent = state.orders;
-  $('unity').textContent = s.land;
-  $('landCount').textContent = `${s.land}領`;
+  const totalLand = conquerableLand();
+  $('unity').textContent = Math.round((s.land / totalLand) * 100);
+  $('landCount').textContent = `${s.land}／${totalLand}領`;
   $('goldDelta').textContent = `来年 ${signed(inc.gold)}`;
   $('goldDelta').title =
     `統治済み領土 ${s.productiveLand} + 町 ${s.towns * 5} − 軍維持 ${Math.ceil(state.army / 5)}`;
@@ -29,10 +30,15 @@ function render() {
 const signed = (n) => (n >= 0 ? '+' : '') + n;
 function nationIntent(id, alive = true) {
   if (id === 'player' || !alive) return null;
+  if (isSanctioned(id)) return { text: '列国の制裁下', tone: 'danger' };
+  const partner = ceasefirePartner(id);
+  if (partner) return { text: `${META[partner].short}と停戦中`, tone: 'peace' };
   const f = state.factions[id],
     s = stats(id),
     inc = income(id),
-    enemies = borderTargets(id, (o) => o !== id && o !== 'neutral'),
+    enemies = borderTargets(id, (o) => o !== id && o !== 'neutral').filter(
+      (i) => !activeCeasefire(id, state.tiles[i].owner),
+    ),
     neutral = borderTargets(id, (o) => o === 'neutral');
   if (enemies.some((i) => threatensOwnCapital(id, i))) return { text: '首都防衛', tone: 'danger' };
   const level = threatLevel(),
@@ -51,14 +57,35 @@ function nationIntent(id, alive = true) {
   if (enemies.length) return { text: '侵攻機会を模索', tone: 'watch' };
   return null;
 }
+function nationDiplomacyText(id) {
+  if (isSanctioned(id)) return `条約破り・制裁残り${sanctionRemaining(id)}年`;
+  const partner = ceasefirePartner(id);
+  if (partner) return `${META[partner].name}と停戦中・残り${ceasefireRemaining(id, partner)}年`;
+  if (id !== 'player') {
+    const cooldown = ceasefireCooldownRemaining('player', id);
+    if (cooldown) return `アルデンとの再交渉まで${cooldown}年`;
+  }
+  return '';
+}
 function renderNations() {
   $('nations').innerHTML = IDS.map((id) => {
     const alive = id === 'player' ? !state.playerDefeated : state.factions[id].alive,
       s = stats(id),
       intent = nationIntent(id, alive),
-      fatigue = id !== 'player' && alive ? warFatigueStatus(id, 'player') : null;
-    return `<article class="nation ${id} ${alive ? '' : 'dead'}"><div class="nation-head"><i class="nation-color" style="background:${COLORS[id]}"></i><strong>${META[id].name}</strong>${id === 'player' ? '<b class="you-badge">あなた</b>' : ''}<small>${alive ? META[id].trait : '滅亡'}</small></div>${intent ? `<div class="nation-intent ${intent.tone}"><span>◆</span>${intent.text}</div>` : ''}${fatigue ? `<div class="nation-fatigue ${fatigue.tone}">対アルデン：<strong>${fatigue.text}</strong></div>` : ''}<div class="nation-stats"><span>領土 ${s.land}</span><span>兵力 ${s.army}</span><span>${s.towns + s.farms + s.barracks + s.forts}施設</span></div></article>`;
+      fatigue = id !== 'player' && alive ? warFatigueStatus(id, 'player') : null,
+      diplomacy = alive ? nationDiplomacyText(id) : '',
+      proposal =
+        id !== 'player' && alive && !state.playerDefeated
+          ? ceasefireProposalStatus('player', id)
+          : null,
+      canShowProposal = proposal && !activeCeasefire('player', id);
+    return `<article class="nation ${id} ${alive ? '' : 'dead'}"><div class="nation-head"><i class="nation-color" style="background:${COLORS[id]}"></i><strong>${META[id].name}</strong>${id === 'player' ? '<b class="you-badge">あなた</b>' : ''}<small>${alive ? META[id].trait : '滅亡'}</small></div>${intent ? `<div class="nation-intent ${intent.tone}"><span>◆</span>${intent.text}</div>` : ''}${fatigue ? `<div class="nation-fatigue ${fatigue.tone}">対アルデン：<strong>${fatigue.text}</strong></div>` : ''}${diplomacy ? `<div class="nation-diplomacy">${diplomacy}</div>` : ''}<div class="nation-stats"><span>領土 ${s.land}</span><span>兵力 ${s.army}</span><span>${s.towns + s.farms + s.barracks + s.forts}施設</span></div>${canShowProposal ? `<button class="ceasefire-button" data-ceasefire="${id}" ${proposal.ok ? '' : 'disabled'} title="${proposal.reason}">停戦を提案${proposal.ok ? `・見込み${ceasefireLikelihood(id, 'player')}` : ''}</button>` : ''}</article>`;
   }).join('');
+  document
+    .querySelectorAll('[data-ceasefire]')
+    .forEach((button) =>
+      button.addEventListener('click', () => proposePlayerCeasefire(button.dataset.ceasefire)),
+    );
 }
 function threatRanking() {
   return IDS.filter((id) => land(id) > 0).sort((a, b) => land(b) - land(a));
@@ -72,7 +99,7 @@ function threatLevel() {
     territory = ranked.length ? land(ranked[0]) : 0,
     gap = ranked.length > 1 ? territory - land(ranked[1]) : territory;
   if (gap < 5) return 0;
-  return territory >= 35 ? 1 : 0;
+  return territory >= Math.ceil(conquerableLand() * 0.35) ? 1 : 0;
 }
 function yearlyOrders() {
   return 2;
@@ -85,8 +112,8 @@ function renderThreat() {
   card.className = `rules-note threat-note ${level === 1 ? 'caution' : ''}`;
   card.innerHTML =
     level === 1
-      ? `<strong>${name}への警戒</strong><p>${name}が35領以上かつ2位に5領差をつけ、他国は同国への攻撃を優先します。</p>`
-      : '<strong>列国情勢</strong><p>最大国が35領以上かつ2位に5領差をつけると、列国の警戒対象になります。</p>';
+      ? `<strong>${name}への警戒</strong><p>${name}が全領土の35%以上かつ2位に5領差をつけ、他国は同国への攻撃を優先します。</p>`
+      : '<strong>列国情勢</strong><p>最大国が全領土の35%以上かつ2位に5領差をつけると、列国の警戒対象になります。</p>';
 }
 function isBoundary(i, side) {
   const row = Math.floor(i / 10),
@@ -111,8 +138,8 @@ function renderMap() {
         border = t.owner === 'player' ? '#e4c15b' : color,
         b = t.capital ? { icon: '♛', name: '首都' } : BUILDINGS[t.building],
         style = `--owner:${color};border-top-color:${isBoundary(i, 'top') ? border : 'transparent'};border-right-color:${isBoundary(i, 'right') ? border : 'transparent'};border-bottom-color:${isBoundary(i, 'bottom') ? border : 'transparent'};border-left-color:${isBoundary(i, 'left') ? border : 'transparent'}`;
-      const def = tileDefense(i);
-      return `<button class="tile owner-${t.owner} ${t.terrain} ${t.isolation ? 'isolated' : ''} ${t.occupation ? 'occupied' : ''} ${t.occupation === 2 ? 'protected' : ''} ${selectedTile === i ? 'selected' : ''} ${!isMobile() && validTarget(i) ? 'valid' : ''}" style="${style}" data-index="${i}" role="gridcell" aria-label="${META[t.owner].name}、${TERRAIN[t.terrain].name}${b ? '、' + b.name : ''}${t.occupation === 2 ? '、占領保護中' : t.occupation === 1 ? '、安定化中' : ''}${t.isolation ? '、補給切れ' : ''}"><span class="flag">${t.owner === 'neutral' ? '' : t.owner === 'player' ? '♛' : META[t.owner].short.slice(0, 1)}</span>${b ? `<span class="structure">${b.icon}</span>` : `<span class="terrain">${TERRAIN[t.terrain].icon}</span>`}${t.occupation ? `<span class="occupation-mark">${t.occupation === 2 ? '保' : '安'}</span>` : ''}<span class="garrison">${def}</span></button>`;
+      const def = isConquerableTile(t) ? tileDefense(i) : null;
+      return `<button class="tile owner-${t.owner} ${t.terrain} ${t.riverAxis ? `river-${t.riverAxis}` : ''} ${t.isolation ? 'isolated' : ''} ${t.occupation ? 'occupied' : ''} ${t.occupation === 2 ? 'protected' : ''} ${selectedTile === i ? 'selected' : ''} ${!isMobile() && validTarget(i) ? 'valid' : ''}" style="${style}" data-index="${i}" role="gridcell" aria-label="${META[t.owner].name}、${TERRAIN[t.terrain].name}${b ? '、' + b.name : ''}${t.occupation === 2 ? '、占領保護中' : t.occupation === 1 ? '、安定化中' : ''}${t.isolation ? '、補給切れ' : ''}"><span class="flag">${['neutral', 'void'].includes(t.owner) ? '' : t.owner === 'player' ? '♛' : META[t.owner].short.slice(0, 1)}</span>${b ? `<span class="structure">${b.icon}</span>` : `<span class="terrain">${TERRAIN[t.terrain].icon}</span>`}${t.occupation ? `<span class="occupation-mark">${t.occupation === 2 ? '保' : '安'}</span>` : ''}${def === null ? '' : `<span class="garrison">${def}</span>`}</button>`;
     })
     .join('');
   document
@@ -122,7 +149,15 @@ function renderMap() {
 function renderCommands() {
   document.querySelectorAll('[data-action]').forEach((b) => {
     b.classList.toggle('active', selectedAction === b.dataset.action);
-    b.disabled = state.gameOver || state.playerDefeated || state.autoSettlement || state.orders < 1;
+    b.disabled =
+      state.gameOver ||
+      state.playerDefeated ||
+      state.autoSettlement ||
+      state.orders < 1 ||
+      (b.dataset.action === 'bridge' &&
+        (builtBridgeCount('player') >= 1 ||
+          state.gold < BRIDGE_COST.gold ||
+          state.food < BRIDGE_COST.food));
   });
   const townCount = state.tiles.filter((t) => t.owner === 'player' && t.building === 'town').length;
   $('buildings').innerHTML = Object.entries(BUILDINGS)
@@ -186,11 +221,15 @@ function renderMobileActions() {
     );
   if (targetAllows(selectedTile, 'invade'))
     actions.push(
-      `<button data-mobile-action="invade" ${canPlayerAction('invade', selectedTile) ? '' : 'disabled'}><strong>⚔ 侵攻</strong><small>兵力5以上・命令1</small></button>`,
+      `<button data-mobile-action="invade" ${canPlayerAction('invade', selectedTile) ? '' : 'disabled'}><strong>⚔ ${activeCeasefire('player', t.owner) ? '停戦破棄・奇襲' : '侵攻'}</strong><small>${activeCeasefire('player', t.owner) ? '奇襲+2・制裁8年' : '兵力5以上・命令1'}</small></button>`,
     );
   if (targetAllows(selectedTile, 'demolish'))
     actions.push(
       `<button data-mobile-action="demolish" ${canPlayerAction('demolish', selectedTile) ? '' : 'disabled'}><strong>⌫ 施設撤去</strong><small>払い戻しなし・命令1</small></button>`,
+    );
+  if (targetAllows(selectedTile, 'bridge'))
+    actions.push(
+      `<button data-mobile-action="bridge" ${canPlayerAction('bridge', selectedTile) ? '' : 'disabled'}><strong>═ 橋を建設</strong><small>金40・食15・命令1</small></button>`,
     );
   if (t.owner === 'player' && !t.building && t.occupation !== 2)
     actions.push(
@@ -232,7 +271,11 @@ function renderSelection() {
     return;
   }
   const t = state.tiles[selectedTile],
-    b = t.capital ? '首都' : BUILDINGS[t.building]?.name || '未開発',
+    b = t.capital
+      ? '首都'
+      : TERRAIN[t.terrain].blocked
+        ? '地形'
+        : BUILDINGS[t.building]?.name || '未開発',
     relocation =
       t.capital && t.owner !== 'neutral'
         ? `／遷都成功率 ${formatChance(relocationChance(t.owner))}`
@@ -242,9 +285,13 @@ function renderSelection() {
         ? '／占領保護中（再攻撃不可・収入なし・拠点利用不可）'
         : t.occupation === 1
           ? '／安定化中（施設建設・撤去可・奪還可能・収入なし・施設効果なし・拠点利用不可）'
-          : '';
+          : '',
+    diplomacy = activeCeasefire('player', t.owner) ? '／停戦中（侵攻すると制裁8年）' : '';
+  const terrainNote = TERRAIN[t.terrain].blocked
+    ? terrainEffectText(t)
+    : `${terrainEffectText(t)}／現在の守備 ${tileDefense(selectedTile)}`;
   $('selection').innerHTML =
-    `<small>${META[t.owner].name}</small><strong>${TERRAIN[t.terrain].name}・${b}</strong><p>守備 ${tileDefense(selectedTile)}${occupation}${t.isolation ? `／補給切れ −${t.isolation}` : ''}${relocation}</p>`;
+    `<small>${META[t.owner].name}</small><strong>${TERRAIN[t.terrain].name}・${b}</strong><p>${terrainNote}${occupation}${t.isolation ? `／補給切れ −${t.isolation}` : ''}${relocation}${diplomacy}</p>`;
 }
 function renderLog() {
   const wrap = document.querySelector('.chronicle-wrap'),
