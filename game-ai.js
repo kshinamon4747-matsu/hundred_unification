@@ -60,14 +60,14 @@ function targetScore(id, i) {
     owner = t.owner,
     capital = state.tiles.findIndex((x) => x.owner === owner && x.capital),
     cut = supplyCutValue(i, owner),
-    f = state.factions[id],
-    profile = AI_PROFILE[id];
+    profile = AI_PROFILE[id],
+    combat = combatCalculation(id, i);
   let score = Math.random() * 5 - tileDefense(i) * 1.2;
   if (threatensOwnCapital(id, i)) {
     const ownCapital = state.tiles.findIndex((x) => x.owner === id && x.capital);
     score += 230 + (3 - distance(i, ownCapital)) * 30;
   }
-  if (t.isolation) score += 48 + Math.min(20, t.isolation * 2);
+  if (t.supplyStatus === 'cut') score += 48 + Math.min(20, t.isolation * 2);
   if (cut) score += 32 + cut * 9;
   if (t.capital) score += 150;
   else if (capital >= 0) {
@@ -76,7 +76,7 @@ function targetScore(id, i) {
     if (movementNeighbors(i).includes(capital)) score += 42;
   }
   if (t.building && t.building !== 'capital') score += BUILDINGS[t.building]?.cost / 6 || 0;
-  score -= crossingDefenseBonus(id, i) * 8;
+  score -= combat.crossingBonus * 8;
   score -= terrainInvasionLoss(t) * 14;
   if (t.building === 'farm') score += Math.max(0, terrainFarmFood(t) - BUILDINGS.farm.food) * 4;
   if (shouldAvoidContestedTarget(id, i)) score -= 180;
@@ -84,7 +84,7 @@ function targetScore(id, i) {
     score += profile.capitalBias;
   if (cut) score += profile.cutBias * cut;
   if (t.building === profile.preferredTarget) score += profile.targetBias;
-  score += (Math.floor(f.army * 0.68) + support(i, id) - tileDefense(i)) * 1.4;
+  score += (combat.attack - combat.baseDefense) * 1.4;
   if (owner === threatLeader() && owner !== id && threatLevel() === 1) score += 30;
   if (isSanctioned(owner) && owner !== id) score += 90;
   score -= warFatiguePriorityPenalty(id, i);
@@ -122,7 +122,7 @@ const AI_PROFILE = {
     strategic: 0.94,
     reserve: 18,
     armyScale: 0.72,
-    armyBase: 4,
+    armyBase: 5,
     recruitRatio: 0.75,
     recruitFood: 34,
     minRecruitPopulation: 10,
@@ -147,7 +147,7 @@ const AI_PROFILE = {
     strategic: 0.85,
     reserve: 13,
     armyScale: 0.84,
-    armyBase: 4,
+    armyBase: 5,
     recruitRatio: 0.9,
     recruitFood: 20,
     minRecruitPopulation: 9,
@@ -170,7 +170,7 @@ function strategicTarget(id, i) {
     capital = state.tiles.findIndex((x) => x.owner === t.owner && x.capital);
   return !!(
     threatensOwnCapital(id, i) ||
-    t.isolation ||
+    t.supplyStatus === 'cut' ||
     t.capital ||
     supplyCutValue(i, t.owner) ||
     (capital >= 0 && movementNeighbors(i).includes(capital))
@@ -180,16 +180,14 @@ function aiArmyGoal(id) {
   const profile = AI_PROFILE[id];
   return Math.max(16, Math.ceil(land(id) * profile.armyScale) + profile.armyBase);
 }
-function shouldAiAttack(id, i) {
+function aiAttackAssessment(id, i) {
   const f = state.factions[id],
     profile = AI_PROFILE[id],
     t = state.tiles[i],
     capitalDefense = threatensOwnCapital(id, i),
     strategic = strategicTarget(id, i),
-    expectedAttack = Math.floor(f.army * 0.68) + support(i, id) + 3,
-    expectedDefense = tileDefense(i) + crossingDefenseBonus(id, i) + 3,
-    ratio = expectedAttack / Math.max(1, expectedDefense),
-    expectedLoss = Math.max(1, Math.ceil(expectedDefense / 5)) + terrainLossPenalty(i),
+    combat = combatCalculation(id, i, { attackRoll: 3, defenseRoll: 3 }),
+    ratio = combat.attack / Math.max(1, combat.defense),
     reserve = capitalDefense
       ? Math.max(3, Math.ceil(land(id) / 10))
       : Math.max(profile.reserve, Math.ceil(land(id) / 4)),
@@ -200,15 +198,22 @@ function shouldAiAttack(id, i) {
         : strategic
           ? profile.strategic
           : profile.normal) - latePressure;
-  if (
-    activeCeasefire(id, t.owner) ||
-    t.occupation === 2 ||
-    shouldAvoidContestedTarget(id, i) ||
-    f.army < 7 ||
-    ratio < threshold
-  )
-    return false;
-  return t.capital || f.army - expectedLoss >= reserve;
+  if (activeCeasefire(id, t.owner))
+    return { ok: false, reason: 'ceasefire', combat, ratio, threshold, reserve };
+  if (t.occupation === 2)
+    return { ok: false, reason: 'occupation_protection', combat, ratio, threshold, reserve };
+  if (shouldAvoidContestedTarget(id, i))
+    return { ok: false, reason: 'contested_lock', combat, ratio, threshold, reserve };
+  if (combat.baseArmy < 7)
+    return { ok: false, reason: 'weak_origin', combat, ratio, threshold, reserve };
+  if (ratio < threshold)
+    return { ok: false, reason: 'insufficient_odds', combat, ratio, threshold, reserve };
+  if (!t.capital && f.army - combat.victoryLoss < reserve)
+    return { ok: false, reason: 'reserve_shortage', combat, ratio, threshold, reserve };
+  return { ok: true, reason: 'viable', combat, ratio, threshold, reserve };
+}
+function shouldAiAttack(id, i) {
+  return aiAttackAssessment(id, i).ok;
 }
 function chooseAiTarget(id, targets) {
   const viable = targets.filter((i) => shouldAiAttack(id, i));
@@ -236,6 +241,25 @@ function shouldPrioritizeRecruit(id) {
     goal = aiArmyGoal(id);
   if (f.army >= goal || !canAiRecruit(id)) return false;
   return f.food >= profile.recruitFood || f.army < Math.ceil(goal * profile.recruitRatio);
+}
+function ochreOffensiveReady(id = 'ochre') {
+  const f = state.factions[id];
+  return (
+    id === 'ochre' && !!f?.alive && f.food >= 80 && f.population >= 12 && f.army >= aiArmyGoal(id)
+  );
+}
+function ochrePreparedOffensiveTarget(targets) {
+  const decisive = targets.filter((i) => {
+    const combat = combatCalculation('ochre', i, { attackRoll: 3, defenseRoll: 3 }),
+      mode = globalThis.__GARRISON_OCHRE_MODE__ || 'relaxed',
+      defense =
+        mode === 'ignore'
+          ? Math.max(1, combat.defense - garrisonDefenseAt(i))
+          : Math.max(1, combat.defense),
+      threshold = mode === 'relaxed' ? 1.05 : 1.15;
+    return combat.attack / defense >= threshold;
+  });
+  return decisive.length ? chooseAiTarget('ochre', decisive) : null;
 }
 function canRecruitThisAction(id, turn) {
   const profile = AI_PROFILE[id],
@@ -320,6 +344,107 @@ function strategicFortTile(id) {
 function redFortTile() {
   return strategicFortTile('red');
 }
+function validGarrisonTile(id, i) {
+  const tile = state.tiles[i];
+  return !!(
+    tile &&
+    tile.owner === id &&
+    !tile.occupation &&
+    tile.supplyStatus !== 'cut' &&
+    isConquerableTile(tile)
+  );
+}
+function garrisonTileScore(id, i) {
+  if (!validGarrisonTile(id, i)) return -Infinity;
+  const tile = state.tiles[i],
+    capital = state.tiles.findIndex((candidate) => candidate.owner === id && candidate.capital),
+    adjacentEnemies = movementNeighbors(i).filter(
+      (neighbor) => !['neutral', 'void', id].includes(state.tiles[neighbor].owner),
+    ),
+    borderingCountries = new Set(adjacentEnemies.map((neighbor) => state.tiles[neighbor].owner)),
+    nearCapital = capital >= 0 && distance(i, capital) <= 2,
+    enemyWithinTwo =
+      (tile.capital || nearCapital) &&
+      state.tiles.some(
+        (candidate, index) =>
+          !['neutral', 'void', id].includes(candidate.owner) && distance(i, index) <= 2,
+      );
+  let score =
+    adjacentEnemies.length * 35 +
+    borderingCountries.size * 25 +
+    (adjacentEnemies.length ? supplyCutValue(i, id) * 18 : 0) +
+    (tile.building === 'fort' ? 22 : 0) +
+    (['bridge', 'ford'].includes(tile.terrain) ? 18 : 0);
+  if (tile.capital) score += enemyWithinTwo ? 240 : 16;
+  if (nearCapital) score += enemyWithinTwo ? 45 : 4;
+  return score;
+}
+function bestGarrisonTile(id) {
+  return (
+    state.tiles
+      .map((tile, i) => ({ i, score: garrisonTileScore(id, i) }))
+      .filter((candidate) => Number.isFinite(candidate.score))
+      .sort((a, b) => b.score - a.score || a.i - b.i)[0]?.i ?? -1
+  );
+}
+function normalizeGarrison(id) {
+  const current = state.garrisons?.[id];
+  const tile = current == null ? null : state.tiles[current];
+  if (current == null || (tile && tile.owner === id && !tile.occupation && isConquerableTile(tile)))
+    return;
+  delete state.garrisons[id];
+  state.garrisonFormationYears ??= {};
+  state.garrisonFormationYears[id] = state.year + 5;
+  state.metrics.garrisonsLost = (state.metrics.garrisonsLost || 0) + 1;
+}
+function manageAiGarrison(id, turn) {
+  if (!garrisonExperimentEnabled() || turn.garrisonConsidered) return false;
+  turn.garrisonConsidered = true;
+  state.garrisons ??= {};
+  normalizeGarrison(id);
+  const f = state.factions[id],
+    current = garrisonLocation(id),
+    target = bestGarrisonTile(id),
+    formationCost = garrisonFormationCost();
+  if (target < 0) return false;
+  if (current < 0) {
+    const canAffordSurplus =
+      f.gold >= formationCost.gold + 20 &&
+      f.food >= formationCost.food + 20 &&
+      f.population >= formationCost.population + 8;
+    if (!canAffordSurplus || state.year < (state.garrisonFormationYears?.[id] || 0)) return false;
+    f.gold -= formationCost.gold;
+    f.food -= formationCost.food;
+    f.population -= formationCost.population;
+    state.garrisons[id] = target;
+    state.metrics.garrisonsFormed = (state.metrics.garrisonsFormed || 0) + 1;
+    state.metrics.garrisonGoldSpent = (state.metrics.garrisonGoldSpent || 0) + formationCost.gold;
+    state.metrics.garrisonFoodSpent = (state.metrics.garrisonFoodSpent || 0) + formationCost.food;
+    turn.garrisonManaged = true;
+    return true;
+  }
+  if (
+    current !== target &&
+    f.gold >= GARRISON_MOVE_COST.gold &&
+    f.food >= GARRISON_MOVE_COST.food &&
+    state.year >= (state.garrisonMoveYears?.[id] || 0) &&
+    garrisonTileScore(id, target) >= garrisonTileScore(id, current) + 30
+  ) {
+    f.gold -= GARRISON_MOVE_COST.gold;
+    f.food -= GARRISON_MOVE_COST.food;
+    state.garrisons[id] = target;
+    state.garrisonMoveYears ??= {};
+    state.garrisonMoveYears[id] = state.year + 2;
+    state.metrics.garrisonsMoved = (state.metrics.garrisonsMoved || 0) + 1;
+    state.metrics.garrisonGoldSpent =
+      (state.metrics.garrisonGoldSpent || 0) + GARRISON_MOVE_COST.gold;
+    state.metrics.garrisonFoodSpent =
+      (state.metrics.garrisonFoodSpent || 0) + GARRISON_MOVE_COST.food;
+    turn.garrisonManaged = true;
+    return true;
+  }
+  return false;
+}
 function enemyNearFort(id, i) {
   return state.tiles.some((t, n) => !['neutral', id].includes(t.owner) && distance(i, n) <= 2);
 }
@@ -378,8 +503,9 @@ function ownedRouteDistance(id, start, goal) {
   return Infinity;
 }
 function aiBridgeSiteScore(id, i) {
-  if (!bridgeSiteStatus(id, i).ok) return -Infinity;
-  const banks = axisBanks(i, state.tiles[i].riverAxis),
+  const status = bridgeSiteStatus(id, i);
+  if (!status.ok || status.tiles[0] !== i) return -Infinity;
+  const banks = status.banks,
     connected = capitalConnectedStableTiles(id);
   let score = -Infinity;
   for (let side = 0; side < 2; side++) {
@@ -400,7 +526,9 @@ function aiBridgeSiteScore(id, i) {
       if (Number.isFinite(route)) score = Math.max(score, (route - 1) * 7);
     }
   }
-  return score;
+  const extraCostPenalty =
+    (status.cost.gold - BRIDGE_COST.gold) / 4 + (status.cost.food - BRIDGE_COST.food) / 3;
+  return score - extraCostPenalty;
 }
 function chooseAiBridgeSite(id) {
   return (
@@ -415,11 +543,13 @@ function chooseAiBridgeSite(id) {
 }
 function buildAiBridge(id) {
   const faction = state.factions[id],
-    i = chooseAiBridgeSite(id);
+    i = chooseAiBridgeSite(id),
+    status = i >= 0 ? bridgeSiteStatus(id, i) : null;
   if (
     i < 0 ||
-    faction.gold < BRIDGE_COST.gold + AI_PROFILE[id].reserve ||
-    faction.food < BRIDGE_COST.food ||
+    !status?.ok ||
+    faction.gold < status.cost.gold + AI_PROFILE[id].reserve ||
+    faction.food < status.cost.food ||
     !constructBridge(id, i)
   )
     return false;
@@ -434,6 +564,7 @@ function settleAi(id, neutral) {
   const i = neutral[rand(neutral.length)];
   state.tiles[i].owner = id;
   state.tiles[i].isolation = 0;
+  state.tiles[i].supplyStatus = 'full';
   state.tiles[i].occupation = 1;
   state.tiles[i].fortIdle = 0;
   f.gold -= 10;
@@ -452,10 +583,10 @@ function advanceOccupations(id) {
   });
 }
 function advanceAllOccupations() {
-  IDS.forEach(advanceOccupations);
+  nationIds().forEach(advanceOccupations);
 }
 function aiInitiativeOrder(year = state.year) {
-  const ids = ['red', 'blue', 'ochre'],
+  const ids = aiNationIds(),
     offset = (Math.max(1, year) - 1 + (state.aiInitiativeOffset || 0)) % ids.length;
   return ids.slice(offset).concat(ids.slice(0, offset));
 }
@@ -489,17 +620,19 @@ function aiBetrayalTarget(id) {
     reserve = Math.max(AI_PROFILE[id].reserve + 4, Math.ceil(land(id) / 4)),
     targets = borderTargets(id, (owner) => owner === partner)
       .map((i) => {
-        const defense = tileDefense(i) + crossingDefenseBonus(id, i) + 2,
-          attack = Math.floor(f.army * 0.68) + support(i, id) + 4,
-          expectedLoss = Math.max(1, Math.ceil(defense / 5)) + terrainLossPenalty(i),
+        const combat = combatCalculation(id, i, {
+            surprise: true,
+            attackRoll: 2,
+            defenseRoll: 2,
+          }),
           capital = state.tiles[i].capital;
         return {
           i,
           capital,
           viable:
             (capital || decisive) &&
-            attack / Math.max(1, defense) >= 1.25 &&
-            f.army - expectedLoss >= reserve,
+            combat.attack / Math.max(1, combat.defense) >= 1.25 &&
+            f.army - combat.victoryLoss >= reserve,
           score: (capital ? 1000 : 0) + targetScore(id, i),
         };
       })
@@ -524,6 +657,7 @@ function aiAction(id, turn, action) {
     level = threatLevel(),
     coalitionTargets = enemies.filter((i) => state.tiles[i].owner === leader && leader !== id);
   const capitalThreats = enemies.filter((i) => threatensOwnCapital(id, i));
+  if (manageAiGarrison(id, turn)) return true;
   const capitalDefenseTarget = !turn.attackFailed ? chooseAiTarget(id, capitalThreats) : null;
   if (capitalDefenseTarget !== null) {
     const intruder = state.tiles[capitalDefenseTarget].owner,
@@ -536,6 +670,12 @@ function aiAction(id, turn, action) {
       );
     return invadeForAi(id, capitalDefenseTarget, turn, 'capital-defense');
   }
+  const preparedOffensiveTarget =
+    id === 'ochre' && ochreOffensiveReady() && turn.attacks === 0 && !turn.attackFailed
+      ? ochrePreparedOffensiveTarget(enemies)
+      : null;
+  if (preparedOffensiveTarget !== null)
+    return invadeForAi(id, preparedOffensiveTarget, turn, 'prepared-offensive');
   if (needsAiEconomyBuild(id) && !turn.built && buildAi(id)) {
     turn.built = true;
     return true;
@@ -600,6 +740,8 @@ function runAiYear() {
           Math.random() < AI_PROFILE[id].secondRecruitChance,
         built: false,
         demolished: false,
+        garrisonManaged: false,
+        garrisonConsidered: false,
         betrayalConsidered: false,
       };
     }
@@ -613,12 +755,18 @@ function runAiYear() {
     }
 }
 function runAiCeasefireDiplomacy() {
-  const pairs = [
-      ['red', 'blue'],
-      ['blue', 'ochre'],
-      ['ochre', 'red'],
-    ],
-    offset = (state.year - 1 + (state.aiInitiativeOffset || 0)) % pairs.length,
+  for (const [pair] of Object.entries(state.ceasefires || {})) {
+    const [a, b] = diplomacyPairCountries(pair);
+    if (a === 'player' || b === 'player' || !ceasefireRenewalDue(a, b)) continue;
+    if (ceasefireRenewalDecision(a, b).agreed) renewCeasefire(a, b);
+  }
+  const ids = aiNationIds(),
+    pairs =
+      ids.length < 3
+        ? ids.slice(0, -1).map((id, index) => [id, ids[index + 1]])
+        : ids.map((id, index) => [id, ids[(index + 1) % ids.length]]),
+    pairCount = Math.max(1, pairs.length),
+    offset = (state.year - 1 + (state.aiInitiativeOffset || 0)) % pairCount,
     ordered = pairs.slice(offset).concat(pairs.slice(0, offset));
   for (const [a, b] of ordered)
     if (
@@ -630,7 +778,7 @@ function runAiCeasefireDiplomacy() {
 }
 function aiCeasefireOfferToPlayer() {
   if (state.playerDefeated || state.gameOver) return null;
-  return ['red', 'blue', 'ochre']
+  return aiNationIds()
     .filter(
       (id) => ceasefireProposalStatus(id, 'player').ok && ceasefireWillingness(id, 'player') >= 55,
     )
@@ -642,12 +790,11 @@ function aiInvade(id, i, reason = '') {
     t = state.tiles[i],
     loser = t.owner,
     betrayal = reason === 'betrayal' && activeCeasefire(id, loser),
-    def = tileDefense(i) + crossingDefenseBonus(id, i) + rand(5),
-    attack = Math.floor(f.army * 0.68) + support(i, id) + rand(5) + (betrayal ? 2 : 0);
+    combat = rollCombat(id, i, { surprise: betrayal });
   if (activeCeasefire(id, loser) && !betrayal) return false;
   if (betrayal) breakCeasefire(id, loser);
-  if (attack >= def) {
-    const loss = Math.max(1, Math.ceil(def / 5)) + terrainLossPenalty(i),
+  if (combat.victory) {
+    const loss = combat.victoryLoss,
       attackerBefore = f.army,
       defenderBefore = loser === 'player' ? state.army : state.factions[loser]?.army || 0;
     f.army = Math.max(0, attackerBefore - loss);
@@ -667,7 +814,7 @@ function aiInvade(id, i, reason = '') {
     capture(i, id);
     return true;
   }
-  const loss = Math.max(2, Math.ceil(def / 3)) + terrainLossPenalty(i);
+  const loss = combat.failureLoss;
   const attackerBefore = f.army;
   f.army = Math.max(0, attackerBefore - loss);
   recordWarBattle(id, loser, attackerBefore - f.army, 0);
@@ -684,25 +831,46 @@ function aiInvade(id, i, reason = '') {
   return false;
 }
 function updateSupply() {
-  for (const id of IDS) {
+  for (const id of nationIds()) {
     const capital = state.tiles.findIndex((t) => t.owner === id && t.capital),
-      connected = new Set();
+      supplyCost = new Map();
     if (capital >= 0) {
       const queue = [capital];
-      connected.add(capital);
+      supplyCost.set(capital, 0);
       while (queue.length) {
         const current = queue.shift();
+        const currentCost = supplyCost.get(current);
         for (const n of movementNeighbors(current)) {
-          if (state.tiles[n].owner === id && !connected.has(n)) {
-            connected.add(n);
-            queue.push(n);
-          }
+          if (state.tiles[n].owner !== id || (supplyCost.get(n) ?? Infinity) <= currentCost)
+            continue;
+          supplyCost.set(n, currentCost);
+          queue.unshift(n);
+        }
+        for (const n of limitedSupplyNeighborsIn(state.tiles, current)) {
+          const nextCost = currentCost + 1;
+          if (state.tiles[n].owner !== id || (supplyCost.get(n) ?? Infinity) <= nextCost) continue;
+          supplyCost.set(n, nextCost);
+          queue.push(n);
         }
       }
     }
     state.tiles.forEach((t, i) => {
-      if (t.owner === id) t.isolation = connected.has(i) ? 0 : (t.isolation || 0) + 2;
-      else if (t.owner === 'neutral') t.isolation = 0;
+      if (t.owner === id) {
+        const cost = supplyCost.get(i);
+        if (cost === 0) {
+          t.isolation = 0;
+          t.supplyStatus = 'full';
+        } else if (Number.isFinite(cost)) {
+          t.isolation = 1;
+          t.supplyStatus = 'limited';
+        } else {
+          t.isolation = t.supplyStatus === 'cut' ? (t.isolation || 0) + 2 : 2;
+          t.supplyStatus = 'cut';
+        }
+      } else if (t.owner === 'neutral') {
+        t.isolation = 0;
+        t.supplyStatus = 'full';
+      }
     });
   }
 }

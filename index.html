@@ -12,9 +12,9 @@
       content="川や山を越え、100マスの大陸統一を目指すオフライン戦略ゲーム"
     />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=72" />
-    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=72" />
-    <link rel="stylesheet" href="styles.css?v=72" />
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=98" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=98" />
+    <link rel="stylesheet" href="styles.css?v=98" />
     <title>100マス統一記</title>
   </head>
   <body>
@@ -76,7 +76,7 @@
             </div>
           </div>
           <div id="map" class="map" role="grid" aria-label="10×10の大陸地図"></div>
-          <div class="map-note">色の太線が国境です。マスを選ぶと地形と守備を確認できます。</div>
+          <div class="map-note">色の太線が国境です。「駐」は駐屯兵団の配備地です。</div>
         </section>
 
         <aside class="panel command-panel">
@@ -105,6 +105,10 @@
               <span>♟</span>
               <div><strong>徴兵</strong><small>民3・金15・食8</small></div>
             </button>
+            <button id="garrisonBtn" data-action="garrison">
+              <span>▣</span>
+              <div><strong>駐屯兵団</strong><small>金20・食15・民1</small></div>
+            </button>
             <button id="undoBtn">
               <span>↶</span>
               <div><strong>1手戻す</strong><small>戻せる命令はありません</small></div>
@@ -115,7 +119,7 @@
             </button>
             <button data-action="bridge">
               <span>═</span>
-              <div><strong>橋を建設</strong><small>金40・食15・一国1本</small></div>
+              <div><strong>橋を建設</strong><small>1マス 金40・食15／2マス 倍額</small></div>
             </button>
           </div>
           <p class="subhead">領内建設</p>
@@ -124,7 +128,12 @@
             <span>年を進める</span><small>各国が行動します</small>
           </button>
           <div class="minor-actions">
-            <button id="helpBtn">遊び方</button><button id="newGameBtn">新しい大陸</button>
+            <button id="helpBtn">遊び方</button>
+            <label class="world-type-picker" for="worldTypeSelect">
+              <span>大陸</span
+              ><select id="worldTypeSelect" aria-label="新しい大陸のタイプ"></select>
+            </label>
+            <button id="newGameBtn">新しい大陸</button>
           </div>
         </aside>
       </section>
@@ -149,10 +158,10 @@
         <button id="dialogSecondary" class="dialog-secondary" hidden>新しい大陸へ</button>
       </div>
     </dialog>
-    <script src="game-state.js?v=72" defer></script>
-    <script src="game-ui.js?v=72" defer></script>
-    <script src="game-rules.js?v=72" defer></script>
-    <script src="game-ai.js?v=72" defer></script>
-    <script src="app.js?v=72" defer></script>
+    <script src="game-state.js?v=98" defer></script>
+    <script src="game-ui.js?v=98" defer></script>
+    <script src="game-rules.js?v=98" defer></script>
+    <script src="game-ai.js?v=98" defer></script>
+    <script src="app.js?v=98" defer></script>
   </body>
 </html>

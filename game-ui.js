@@ -48,6 +48,8 @@ function nationIntent(id, alive = true) {
   if (s.pop >= s.capacity - 2) return { text: '町を整備', tone: 'build' };
   if (f.army < Math.ceil(aiArmyGoal(id) * 0.75) && canAiRecruit(id))
     return { text: '兵力増強', tone: 'war' };
+  if (ochreOffensiveReady(id) && enemies.length)
+    return { text: '蓄えを投入する好機待ち', tone: 'war' };
   if (enemies.some((i) => state.tiles[i].capital)) return { text: '敵首都を攻略', tone: 'war' };
   if (id === 'red' && enemies.length) return { text: '前線突破を準備', tone: 'war' };
   if (id === 'blue' && enemies.length) return { text: '勝機へ国力を蓄積', tone: 'build' };
@@ -60,7 +62,11 @@ function nationIntent(id, alive = true) {
 function nationDiplomacyText(id) {
   if (isSanctioned(id)) return `条約破り・制裁残り${sanctionRemaining(id)}年`;
   const partner = ceasefirePartner(id);
-  if (partner) return `${META[partner].name}と停戦中・残り${ceasefireRemaining(id, partner)}年`;
+  if (partner) {
+    const agreement = state.ceasefires[diplomacyPairKey(id, partner)],
+      extension = agreement?.renewals ? `・延長${agreement.renewals}回` : '';
+    return `${META[partner].name}と停戦中・残り${ceasefireRemaining(id, partner)}年${extension}`;
+  }
   if (id !== 'player') {
     const cooldown = ceasefireCooldownRemaining('player', id);
     if (cooldown) return `アルデンとの再交渉まで${cooldown}年`;
@@ -68,19 +74,21 @@ function nationDiplomacyText(id) {
   return '';
 }
 function renderNations() {
-  $('nations').innerHTML = IDS.map((id) => {
-    const alive = id === 'player' ? !state.playerDefeated : state.factions[id].alive,
-      s = stats(id),
-      intent = nationIntent(id, alive),
-      fatigue = id !== 'player' && alive ? warFatigueStatus(id, 'player') : null,
-      diplomacy = alive ? nationDiplomacyText(id) : '',
-      proposal =
-        id !== 'player' && alive && !state.playerDefeated
-          ? ceasefireProposalStatus('player', id)
-          : null,
-      canShowProposal = proposal && !activeCeasefire('player', id);
-    return `<article class="nation ${id} ${alive ? '' : 'dead'}"><div class="nation-head"><i class="nation-color" style="background:${COLORS[id]}"></i><strong>${META[id].name}</strong>${id === 'player' ? '<b class="you-badge">あなた</b>' : ''}<small>${alive ? META[id].trait : '滅亡'}</small></div>${intent ? `<div class="nation-intent ${intent.tone}"><span>◆</span>${intent.text}</div>` : ''}${fatigue ? `<div class="nation-fatigue ${fatigue.tone}">対アルデン：<strong>${fatigue.text}</strong></div>` : ''}${diplomacy ? `<div class="nation-diplomacy">${diplomacy}</div>` : ''}<div class="nation-stats"><span>領土 ${s.land}</span><span>兵力 ${s.army}</span><span>${s.towns + s.farms + s.barracks + s.forts}施設</span></div>${canShowProposal ? `<button class="ceasefire-button" data-ceasefire="${id}" ${proposal.ok ? '' : 'disabled'} title="${proposal.reason}">停戦を提案${proposal.ok ? `・見込み${ceasefireLikelihood(id, 'player')}` : ''}</button>` : ''}</article>`;
-  }).join('');
+  $('nations').innerHTML = nationIds()
+    .map((id) => {
+      const alive = id === 'player' ? !state.playerDefeated : state.factions[id].alive,
+        s = stats(id),
+        intent = nationIntent(id, alive),
+        fatigue = id !== 'player' && alive ? warFatigueStatus(id, 'player') : null,
+        diplomacy = alive ? nationDiplomacyText(id) : '',
+        proposal =
+          id !== 'player' && alive && !state.playerDefeated
+            ? ceasefireProposalStatus('player', id)
+            : null,
+        canShowProposal = proposal && !activeCeasefire('player', id);
+      return `<article class="nation ${id} ${alive ? '' : 'dead'}"><div class="nation-head"><i class="nation-color" style="background:${COLORS[id]}"></i><strong>${META[id].name}</strong>${id === 'player' ? '<b class="you-badge">あなた</b>' : ''}<small>${alive ? META[id].trait : '滅亡'}</small></div>${intent ? `<div class="nation-intent ${intent.tone}"><span>◆</span>${intent.text}</div>` : ''}${fatigue ? `<div class="nation-fatigue ${fatigue.tone}">対アルデン：<strong>${fatigue.text}</strong></div>` : ''}${diplomacy ? `<div class="nation-diplomacy">${diplomacy}</div>` : ''}<div class="nation-stats"><span>領土 ${s.land}</span><span>兵力 ${s.army}</span><span>${s.towns + s.farms + s.barracks + s.forts}施設</span><span>駐屯 ${garrisonLocation(id) >= 0 ? '配備' : 'なし'}</span></div>${canShowProposal ? `<button class="ceasefire-button" data-ceasefire="${id}" ${proposal.ok ? '' : 'disabled'} title="${proposal.reason}">停戦を提案${proposal.ok ? `・見込み${ceasefireLikelihood(id, 'player')}` : ''}</button>` : ''}</article>`;
+    })
+    .join('');
   document
     .querySelectorAll('[data-ceasefire]')
     .forEach((button) =>
@@ -88,7 +96,9 @@ function renderNations() {
     );
 }
 function threatRanking() {
-  return IDS.filter((id) => land(id) > 0).sort((a, b) => land(b) - land(a));
+  return nationIds()
+    .filter((id) => land(id) > 0)
+    .sort((a, b) => land(b) - land(a));
 }
 function threatLeader() {
   return threatRanking()[0] || 'player';
@@ -102,7 +112,11 @@ function threatLevel() {
   return territory >= Math.ceil(conquerableLand() * 0.35) ? 1 : 0;
 }
 function yearlyOrders() {
-  return 2;
+  const lateOrderYear =
+    globalThis.__LATE_ORDER_YEAR__ === undefined
+      ? 200
+      : Number(globalThis.__LATE_ORDER_YEAR__) || 0;
+  return lateOrderYear > 0 && state.year >= lateOrderYear ? 3 : 2;
 }
 function renderThreat() {
   const level = threatLevel(),
@@ -139,7 +153,16 @@ function renderMap() {
         b = t.capital ? { icon: '♛', name: '首都' } : BUILDINGS[t.building],
         style = `--owner:${color};border-top-color:${isBoundary(i, 'top') ? border : 'transparent'};border-right-color:${isBoundary(i, 'right') ? border : 'transparent'};border-bottom-color:${isBoundary(i, 'bottom') ? border : 'transparent'};border-left-color:${isBoundary(i, 'left') ? border : 'transparent'}`;
       const def = isConquerableTile(t) ? tileDefense(i) : null;
-      return `<button class="tile owner-${t.owner} ${t.terrain} ${t.riverAxis ? `river-${t.riverAxis}` : ''} ${t.isolation ? 'isolated' : ''} ${t.occupation ? 'occupied' : ''} ${t.occupation === 2 ? 'protected' : ''} ${selectedTile === i ? 'selected' : ''} ${!isMobile() && validTarget(i) ? 'valid' : ''}" style="${style}" data-index="${i}" role="gridcell" aria-label="${META[t.owner].name}、${TERRAIN[t.terrain].name}${b ? '、' + b.name : ''}${t.occupation === 2 ? '、占領保護中' : t.occupation === 1 ? '、安定化中' : ''}${t.isolation ? '、補給切れ' : ''}"><span class="flag">${['neutral', 'void'].includes(t.owner) ? '' : t.owner === 'player' ? '♛' : META[t.owner].short.slice(0, 1)}</span>${b ? `<span class="structure">${b.icon}</span>` : `<span class="terrain">${TERRAIN[t.terrain].icon}</span>`}${t.occupation ? `<span class="occupation-mark">${t.occupation === 2 ? '保' : '安'}</span>` : ''}${def === null ? '' : `<span class="garrison">${def}</span>`}</button>`;
+      const supplyClass =
+        t.supplyStatus === 'limited'
+          ? 'limited-supply'
+          : t.supplyStatus === 'cut'
+            ? 'isolated'
+            : '';
+      const supplyLabel =
+        t.supplyStatus === 'limited' ? '、限定補給' : t.supplyStatus === 'cut' ? '、補給切れ' : '';
+      const stationed = garrisonLocation(t.owner) === i;
+      return `<button class="tile owner-${t.owner} ${t.terrain} ${t.riverAxis ? `river-${t.riverAxis}` : ''} ${supplyClass} ${t.occupation ? 'occupied' : ''} ${t.occupation === 2 ? 'protected' : ''} ${stationed ? 'has-garrison-unit' : ''} ${selectedTile === i ? 'selected' : ''} ${!isMobile() && validTarget(i) ? 'valid' : ''}" style="${style}" data-index="${i}" role="gridcell" aria-label="${META[t.owner].name}、${TERRAIN[t.terrain].name}${b ? '、' + b.name : ''}${stationed ? '、駐屯兵団配備' : ''}${t.occupation === 2 ? '、占領保護中' : t.occupation === 1 ? '、安定化中' : ''}${supplyLabel}"><span class="flag">${['neutral', 'void'].includes(t.owner) ? '' : t.owner === 'player' ? '♛' : META[t.owner].short.slice(0, 1)}</span>${b ? `<span class="structure">${b.icon}</span>` : `<span class="terrain">${TERRAIN[t.terrain].icon}</span>`}${t.occupation ? `<span class="occupation-mark">${t.occupation === 2 ? '保' : '安'}</span>` : ''}${stationed ? '<span class="garrison-unit">駐</span>' : ''}${def === null ? '' : `<span class="garrison">${def}</span>`}</button>`;
     })
     .join('');
   document
@@ -173,6 +196,16 @@ function renderCommands() {
     }),
   );
   $('recruitBtn').disabled = !playerRecruitStatus().ok;
+  const garrison = garrisonLocation('player'),
+    garrisonWait =
+      garrison < 0
+        ? Math.max(0, (state.garrisonFormationYears?.player || 0) - state.year)
+        : Math.max(0, (state.garrisonMoveYears?.player || 0) - state.year);
+  $('garrisonBtn').querySelector('small').textContent = garrisonWait
+    ? `${garrison < 0 ? '再編成' : '再移動'}まで${garrisonWait}年`
+    : garrison < 0
+      ? '金20・食15・民1'
+      : '移動 金5・食5';
   $('undoBtn').disabled = !canUndoPlayerAction();
   $('undoBtn').querySelector('small').textContent = playerUndoDescription();
   $('endTurnBtn').disabled = state.gameOver || state.autoSettlement;
@@ -229,8 +262,20 @@ function renderMobileActions() {
     );
   if (targetAllows(selectedTile, 'bridge'))
     actions.push(
-      `<button data-mobile-action="bridge" ${canPlayerAction('bridge', selectedTile) ? '' : 'disabled'}><strong>═ 橋を建設</strong><small>金40・食15・命令1</small></button>`,
+      (() => {
+        const bridge = bridgeSiteStatus('player', selectedTile),
+          cost = bridge.cost || BRIDGE_COST;
+        return `<button data-mobile-action="bridge" ${canPlayerAction('bridge', selectedTile) ? '' : 'disabled'}><strong>═ 橋を建設</strong><small>金${cost.gold}・食${cost.food}・命令1</small></button>`;
+      })(),
     );
+  if (targetAllows(selectedTile, 'garrison')) {
+    const current = garrisonLocation('player'),
+      status = playerActionStatus('garrison', selectedTile),
+      cost = current < 0 ? garrisonFormationCost() : GARRISON_MOVE_COST;
+    actions.push(
+      `<button data-mobile-action="garrison" ${status.ok ? '' : 'disabled'}><strong>▣ 駐屯兵団を${current < 0 ? '編成' : '移動'}</strong><small>${status.ok ? `金${cost.gold}・食${cost.food}${current < 0 ? '・民1' : ''}・命令1` : status.reason}</small></button>`,
+    );
+  }
   if (t.owner === 'player' && !t.building && t.occupation !== 2)
     actions.push(
       '<button class="mobile-build-toggle" data-mobile-build-toggle><strong>♜ 建設</strong><small>施設を選択</small></button>',
@@ -286,12 +331,20 @@ function renderSelection() {
         : t.occupation === 1
           ? '／安定化中（施設建設・撤去可・奪還可能・収入なし・施設効果なし・拠点利用不可）'
           : '',
-    diplomacy = activeCeasefire('player', t.owner) ? '／停戦中（侵攻すると制裁8年）' : '';
+    diplomacy = activeCeasefire('player', t.owner) ? '／停戦中（侵攻すると制裁8年）' : '',
+    stationed = garrisonLocation(t.owner) === selectedTile ? '／駐屯兵団（守備+5）' : '',
+    farmOutput = t.building === 'farm' ? `／農場の食料 +${farmFoodAt(selectedTile)}` : '';
   const terrainNote = TERRAIN[t.terrain].blocked
     ? terrainEffectText(t)
     : `${terrainEffectText(t)}／現在の守備 ${tileDefense(selectedTile)}`;
+  const supply =
+    t.supplyStatus === 'limited'
+      ? '／限定補給（守備−1）'
+      : t.supplyStatus === 'cut'
+        ? `／補給切れ −${t.isolation}`
+        : '';
   $('selection').innerHTML =
-    `<small>${META[t.owner].name}</small><strong>${TERRAIN[t.terrain].name}・${b}</strong><p>${terrainNote}${occupation}${t.isolation ? `／補給切れ −${t.isolation}` : ''}${relocation}${diplomacy}</p>`;
+    `<small>${META[t.owner].name}</small><strong>${TERRAIN[t.terrain].name}・${b}</strong><p>${terrainNote}${farmOutput}${stationed}${occupation}${supply}${relocation}${diplomacy}</p>`;
 }
 function renderLog() {
   const wrap = document.querySelector('.chronicle-wrap'),

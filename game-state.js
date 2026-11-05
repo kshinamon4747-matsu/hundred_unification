@@ -2,6 +2,7 @@
 
 const SAVE_KEY = 'hundred-tile-unification-v1';
 const INVALID_SAVE_KEY = `${SAVE_KEY}-invalid`;
+const SAVE_VERSION = 26;
 const COLORS = {
   player: '#357a5d',
   red: '#a64f46',
@@ -106,12 +107,57 @@ const BUILDINGS = {
   fort: { name: '砦', icon: '♜', cost: 36, food: 0, gold: 0, def: 9, cap: 0, effect: '守備+9' },
 };
 const IDS = ['player', 'red', 'blue', 'ochre'];
+function validNationIds(ids) {
+  return (
+    Array.isArray(ids) &&
+    ids.length >= 2 &&
+    ids[0] === 'player' &&
+    new Set(ids).size === ids.length &&
+    ids.every(
+      (id) =>
+        typeof id === 'string' &&
+        Object.hasOwn(META, id) &&
+        Object.hasOwn(COLORS, id) &&
+        !['neutral', 'void'].includes(id),
+    )
+  );
+}
+function nationIds(source = state) {
+  return validNationIds(source?.nationIds) ? source.nationIds : IDS;
+}
+function aiNationIds(source = state) {
+  return nationIds(source).filter((id) => id !== 'player');
+}
+function variantNationIds(variant) {
+  return validNationIds(variant?.nationIds) ? [...variant.nationIds] : [...IDS];
+}
 const WORLD_VARIANTS = [
   { name: '四王分立', seeds: [22, 27, 72, 77], forest: 0.22, hill: 0.14 },
   { name: '辺境諸侯', seeds: [11, 18, 81, 88], forest: 0.18, hill: 0.22 },
   { name: '十字街道', seeds: [4, 49, 95, 50], forest: 0.14, hill: 0.14 },
   { name: '深森の国境', seeds: [2, 39, 60, 97], forest: 0.38, hill: 0.1 },
   { name: '高地争覇', seeds: [10, 39, 60, 89], forest: 0.2, hill: 0.26 },
+  {
+    name: '千河流域',
+    seeds: [11, 18, 81, 88],
+    forest: 0.18,
+    hill: 0.16,
+    geography: 'many-rivers',
+  },
+  {
+    name: '万峰山脈',
+    seeds: [10, 39, 60, 89],
+    forest: 0.18,
+    hill: 0.24,
+    geography: 'many-mountains',
+  },
+  {
+    name: '環山盆地',
+    seeds: [11, 18, 81, 88],
+    forest: 0.18,
+    hill: 0.14,
+    geography: 'ring-basin',
+  },
 ];
 const DEVELOPMENTS = [
   { name: '均衡領', buildings: ['farm', 'farm', 'town', 'barracks'] },
@@ -166,6 +212,13 @@ const terrainDefinition = (tileOrTerrain) =>
 const terrainDefense = (tileOrTerrain) => terrainDefinition(tileOrTerrain).defense || 0;
 const terrainFarmFood = (tileOrTerrain) =>
   terrainDefinition(tileOrTerrain).farmFood ?? BUILDINGS.farm.food;
+const WATER_TERRAINS = new Set(['water', 'river', 'ford', 'bridge']);
+function watersideFarmBonus(i, tiles = state.tiles) {
+  return neighbors(i).some((neighbor) => WATER_TERRAINS.has(tiles[neighbor]?.terrain)) ? 2 : 0;
+}
+function farmFoodAt(i, tiles = state.tiles) {
+  return terrainFarmFood(tiles[i]) + watersideFarmBonus(i, tiles);
+}
 const terrainInvasionLoss = (tileOrTerrain) => terrainDefinition(tileOrTerrain).invasionLoss || 0;
 const terrainEffectText = (tileOrTerrain) =>
   terrainDefinition(tileOrTerrain).effect || '特別な効果なし';
@@ -193,9 +246,43 @@ function axisBanks(i, axis) {
   if (axis === 'horizontal') return row > 0 && row < 9 ? [i - 10, i + 10] : [];
   return [];
 }
+function axisStep(i, axis, direction) {
+  const row = Math.floor(i / 10),
+    col = i % 10;
+  if (axis === 'vertical') {
+    const nextCol = col + direction;
+    return nextCol >= 0 && nextCol < 10 ? row * 10 + nextCol : -1;
+  }
+  if (axis === 'horizontal') {
+    const nextRow = row + direction;
+    return nextRow >= 0 && nextRow < 10 ? nextRow * 10 + col : -1;
+  }
+  return -1;
+}
+function terrainSpanAcross(i, terrain, tiles = state.tiles) {
+  const axis = tiles[i]?.riverAxis;
+  if (tiles[i]?.terrain !== terrain || !axis) return null;
+  const span = [i];
+  for (const direction of [-1, 1]) {
+    let cursor = i;
+    while (true) {
+      const next = axisStep(cursor, axis, direction);
+      if (next < 0 || tiles[next]?.terrain !== terrain || tiles[next]?.riverAxis !== axis) break;
+      span.push(next);
+      cursor = next;
+    }
+  }
+  span.sort((a, b) => a - b);
+  const first = span[0],
+    last = span.at(-1),
+    before = axisStep(first, axis, -1),
+    after = axisStep(last, axis, 1);
+  return { tiles: span, banks: before >= 0 && after >= 0 ? [before, after] : [] };
+}
 function crossingBanks(i, tiles = state.tiles) {
   const tile = tiles[i];
-  return TERRAIN[tile?.terrain]?.crossing ? axisBanks(i, tile.riverAxis) : [];
+  if (!TERRAIN[tile?.terrain]?.crossing) return [];
+  return terrainSpanAcross(i, tile.terrain, tiles)?.banks || [];
 }
 function movementNeighborsIn(tiles, i) {
   if (!isConquerableTile(tiles[i])) return [];
@@ -209,6 +296,19 @@ function movementNeighborsIn(tiles, i) {
   return [...out];
 }
 const movementNeighbors = (i) => movementNeighborsIn(state.tiles, i);
+function limitedSupplyNeighborsIn(tiles, i) {
+  if (!isConquerableTile(tiles[i])) return [];
+  const out = new Set();
+  for (const river of neighbors(i)) {
+    const tile = tiles[river];
+    if (tile?.terrain !== 'river') continue;
+    const banks = axisBanks(river, tile.riverAxis);
+    if (!banks.includes(i)) continue;
+    const opposite = banks.find((bank) => bank !== i);
+    if (isConquerableTile(tiles[opposite])) out.add(opposite);
+  }
+  return [...out];
+}
 function crossingBetween(a, b, tiles = state.tiles) {
   for (const i of neighbors(a)) {
     const banks = crossingBanks(i, tiles);
@@ -227,12 +327,12 @@ function attackCrossing(owner, target) {
   return null;
 }
 
-function emptyWarFatigue() {
+function emptyWarFatigue(ids = nationIds()) {
   return Object.fromEntries(
-    IDS.map((id) => [
+    ids.map((id) => [
       id,
       Object.fromEntries(
-        IDS.filter((opponent) => opponent !== id).map((opponent) => [opponent, 0]),
+        ids.filter((opponent) => opponent !== id).map((opponent) => [opponent, 0]),
       ),
     ]),
   );
@@ -277,6 +377,7 @@ function makeTile(variant) {
     building: null,
     capital: false,
     isolation: 0,
+    supplyStatus: 'full',
     occupation: 0,
     fortIdle: 0,
     captureYears: [],
@@ -289,6 +390,8 @@ function markBlockedTile(tile, terrain, riverAxis = null) {
   tile.bridgeBuilder = null;
   tile.building = null;
   tile.capital = false;
+  tile.isolation = 0;
+  tile.supplyStatus = 'full';
 }
 function barrierIndex(vertical, major, minor) {
   return vertical ? major * 10 + minor : minor * 10 + major;
@@ -344,6 +447,22 @@ function placeRiver(tiles) {
     markBlockedTile(tiles[i], index === 0 ? 'ford' : 'bridge', mainAxis);
   });
 }
+function ensureOpenCrossingBanks(tiles) {
+  tiles.forEach((tile, index) => {
+    if (!['ford', 'bridge'].includes(tile.terrain)) return;
+    crossingBanks(index, tiles).forEach((bank) => {
+      if (isConquerableTile(tiles[bank])) return;
+      tiles[bank].owner = 'neutral';
+      tiles[bank].terrain = 'plain';
+      tiles[bank].riverAxis = null;
+      tiles[bank].bridgeBuilder = null;
+      tiles[bank].building = null;
+      tiles[bank].capital = false;
+      tiles[bank].isolation = 0;
+      tiles[bank].supplyStatus = 'full';
+    });
+  });
+}
 function placeMountainRidge(tiles) {
   const vertical = Math.random() < 0.5,
     ridge = meanderingBarrierPath(vertical),
@@ -356,7 +475,128 @@ function placeMountainRidge(tiles) {
     } else markBlockedTile(tiles[i], 'mountain');
   }
 }
-function generateGeography(tiles) {
+function regionalBarrierPath(vertical, corridor, length = 6) {
+  const [minimum, maximum] = corridor,
+    startMajor = rand(11 - length),
+    turnMajor = startMajor + 2 + rand(Math.max(1, length - 3)),
+    path = [];
+  let minor = minimum + rand(maximum - minimum + 1);
+  for (let offset = 0; offset < length; offset++) {
+    const major = startMajor + offset;
+    path.push(barrierIndex(vertical, major, minor));
+    if (major !== turnMajor || minimum === maximum) continue;
+    minor = minor === minimum ? maximum : minimum;
+    path.push(barrierIndex(vertical, major, minor));
+  }
+  return [...new Set(path)];
+}
+function placeRegionalRiver(tiles, path, vertical, crossingTerrain) {
+  const axis = vertical ? 'vertical' : 'horizontal';
+  path.forEach((i) => markBlockedTile(tiles[i], 'river', axis));
+  const candidates = shuffle(
+    path.filter((i) => {
+      const [a, b] = axisBanks(i, axis);
+      return isConquerableTile(tiles[a]) && isConquerableTile(tiles[b]);
+    }),
+  );
+  if (candidates.length) markBlockedTile(tiles[candidates[0]], crossingTerrain, axis);
+}
+function placeManyRivers(tiles) {
+  const vertical = Math.random() < 0.5,
+    corridors = [
+      [1, 2],
+      [4, 5],
+      [7, 8],
+    ],
+    riverCount = Math.random() < 0.6 ? 3 : 2;
+  corridors
+    .slice(0, riverCount)
+    .forEach((corridor, index) =>
+      placeRegionalRiver(
+        tiles,
+        regionalBarrierPath(vertical, corridor),
+        vertical,
+        index === 0 ? 'ford' : 'bridge',
+      ),
+    );
+}
+function placeManyMountainRidges(tiles) {
+  const vertical = Math.random() < 0.5,
+    corridors = [
+      [1, 2],
+      [4, 5],
+      [7, 8],
+    ],
+    ridgeCount = Math.random() < 0.6 ? 3 : 2;
+  for (const corridor of corridors.slice(0, ridgeCount)) {
+    const ridge = regionalBarrierPath(vertical, corridor, 7),
+      passes = new Set(shuffle([...ridge]).slice(0, 2));
+    for (const i of ridge) {
+      if (passes.has(i)) {
+        tiles[i].terrain = 'pass';
+        tiles[i].riverAxis = null;
+      } else markBlockedTile(tiles[i], 'mountain');
+    }
+  }
+}
+function placeProductiveTerrain(tiles, fertileCount = 6, marshCount = 6, excluded = new Set()) {
+  const open = shuffle(
+    tiles
+      .map((tile, i) => (tile.terrain === 'plain' && !excluded.has(i) ? i : -1))
+      .filter((i) => i >= 0),
+  );
+  open.slice(0, fertileCount).forEach((i) => (tiles[i].terrain = 'fertile'));
+  open.slice(fertileCount, fertileCount + marshCount).forEach((i) => (tiles[i].terrain = 'marsh'));
+}
+function placeRingBasin(tiles) {
+  const top = 2 + rand(2),
+    left = 2 + rand(2),
+    bottom = top + 4,
+    right = left + 4,
+    middleRow = top + 2,
+    middleColumn = left + 2,
+    basin = new Set(),
+    passes = new Set([
+      top * 10 + middleColumn,
+      bottom * 10 + middleColumn,
+      middleRow * 10 + left,
+      middleRow * 10 + right,
+    ]);
+  for (let row = top; row <= bottom; row++)
+    for (let column = left; column <= right; column++) {
+      const index = row * 10 + column,
+        boundary = row === top || row === bottom || column === left || column === right;
+      if (boundary) {
+        if (passes.has(index)) {
+          tiles[index].owner = 'neutral';
+          tiles[index].terrain = 'pass';
+          tiles[index].riverAxis = null;
+        } else markBlockedTile(tiles[index], 'mountain');
+      } else {
+        basin.add(index);
+        tiles[index].owner = 'neutral';
+        tiles[index].terrain = 'plain';
+        tiles[index].riverAxis = null;
+      }
+    }
+  const basinTiles = shuffle([...basin]);
+  basinTiles.slice(0, 3).forEach((index) => (tiles[index].terrain = 'fertile'));
+  basinTiles.slice(3, 5).forEach((index) => (tiles[index].terrain = 'marsh'));
+  placeProductiveTerrain(tiles, 3, 4, basin);
+  return new Set([...basin, ...passes]);
+}
+function generateGeography(tiles, variant) {
+  if (variant.geography === 'many-rivers') {
+    placeManyRivers(tiles);
+    placeProductiveTerrain(tiles);
+    return new Set();
+  }
+  if (variant.geography === 'many-mountains') {
+    placeManyMountainRidges(tiles);
+    placeProductiveTerrain(tiles);
+    return new Set();
+  }
+  if (variant.geography === 'ring-basin') return placeRingBasin(tiles);
   if (Math.random() < 0.68) placeRiver(tiles);
   if (Math.random() < 0.78) placeMountainRidge(tiles);
 
@@ -372,11 +612,9 @@ function generateGeography(tiles) {
       .forEach((i) => markBlockedTile(tiles[i], 'water'));
   }
 
-  const open = shuffle(
-    tiles.map((tile, i) => (tile.terrain === 'plain' ? i : -1)).filter((i) => i >= 0),
-  );
-  open.slice(0, 6).forEach((i) => (tiles[i].terrain = 'fertile'));
-  open.slice(6, 12).forEach((i) => (tiles[i].terrain = 'marsh'));
+  placeProductiveTerrain(tiles);
+  ensureOpenCrossingBanks(tiles);
+  return new Set();
 }
 function geographyConnected(tiles) {
   const first = tiles.findIndex(isConquerableTile);
@@ -391,12 +629,12 @@ function geographyConnected(tiles) {
       }
   return seen.size === conquerableLand(tiles);
 }
-function resolveRealmSeeds(tiles, preferred) {
+function resolveRealmSeeds(tiles, preferred, reserved = new Set()) {
   const selected = [];
   for (const desired of preferred) {
     const candidates = tiles
       .map((tile, i) => (isConquerableTile(tile) ? i : -1))
-      .filter((i) => i >= 0 && !selected.includes(i))
+      .filter((i) => i >= 0 && !reserved.has(i) && !selected.includes(i))
       .filter((i) => selected.every((other) => distanceOnGrid(i, other) >= 5))
       .sort((a, b) => distanceOnGrid(a, desired) - distanceOnGrid(b, desired));
     if (!candidates.length) return null;
@@ -407,29 +645,45 @@ function resolveRealmSeeds(tiles, preferred) {
 function distanceOnGrid(a, b) {
   return Math.abs(Math.floor(a / 10) - Math.floor(b / 10)) + Math.abs((a % 10) - (b % 10));
 }
-function createState() {
-  const variants = WORLD_VARIANTS.filter((variant) => capitalZonesSeparated(variant.seeds)),
-    variant = variants[rand(variants.length)],
-    development = DEVELOPMENTS[rand(DEVELOPMENTS.length)];
+function createState(worldName = '') {
+  const variants = WORLD_VARIANTS.filter(
+      (variant) =>
+        variant.seeds.length === variantNationIds(variant).length &&
+        capitalZonesSeparated(variant.seeds),
+    ),
+    requested = variants.find((variant) => variant.name === worldName),
+    variant = requested || variants[rand(variants.length)],
+    development = DEVELOPMENTS[rand(DEVELOPMENTS.length)],
+    ids = variantNationIds(variant),
+    aiIds = ids.filter((id) => id !== 'player');
   let tiles,
+    fallbackTiles,
     generated = false;
   for (let attempt = 0; attempt < 60 && !generated; attempt++) {
     const candidate = Array.from({ length: 100 }, () => makeTile(variant));
-    generateGeography(candidate);
+    const reserved = generateGeography(candidate, variant);
     const seeds =
       geographyConnected(candidate) && conquerableLand(candidate) >= 78
-        ? resolveRealmSeeds(candidate, variant.seeds)
+        ? resolveRealmSeeds(candidate, variant.seeds, reserved)
         : null;
-    if (seeds && generateRealms(candidate, seeds) && generationFairEnough(candidate)) {
-      tiles = candidate;
-      generated = true;
+    if (seeds && generateRealms(candidate, seeds, reserved, ids)) {
+      fallbackTiles = candidate;
+      if (generationFairEnough(candidate, ids)) {
+        tiles = candidate;
+        generated = true;
+      }
     }
   }
   if (!generated) {
-    tiles = Array.from({ length: 100 }, () => makeTile(variant));
-    generateRealms(tiles, variant.seeds);
+    if (fallbackTiles) tiles = fallbackTiles;
+    else {
+      tiles = Array.from({ length: 100 }, () => makeTile(variant));
+      const reserved = variant.geography ? generateGeography(tiles, variant) : new Set();
+      const seeds = resolveRealmSeeds(tiles, variant.seeds, reserved) || variant.seeds;
+      generateRealms(tiles, seeds, reserved, ids);
+    }
   }
-  for (const id of IDS) {
+  for (const id of ids) {
     const own = shuffle(
       tiles.map((t, i) => (t.owner === id && !t.capital ? i : -1)).filter((i) => i >= 0),
     );
@@ -437,9 +691,11 @@ function createState() {
       if (own[n] !== undefined) tiles[own[n]].building = building;
     });
   }
-  const royalSeed = royalSeedFor(tiles, variant.name, development.name);
+  const royalSeed = royalSeedFor(tiles, variant.name, development.name),
+    realmCount = { 4: '四つ', 7: '七つ' }[ids.length] || `${ids.length}つ`;
   return {
-    version: 22,
+    version: SAVE_VERSION,
+    nationIds: ids,
     worldName: variant.name,
     developmentName: development.name,
     year: 1,
@@ -452,33 +708,38 @@ function createState() {
     kingGeneration: 1,
     royalSeed,
     nextSuccessionYear: 1 + royalReignLength(royalSeed, 1),
-    aiInitiativeOffset: rand(3),
+    aiInitiativeOffset: rand(aiIds.length),
     threatNotices: { leader: null, level: 0 },
     metrics: {
       captures: 0,
       rapidRecaptures: 0,
       repeatedRecaptures: 0,
       ceasefires: 0,
+      ceasefireRenewals: 0,
       betrayals: 0,
-      betrayalsByNation: Object.fromEntries(IDS.map((id) => [id, 0])),
+      betrayalsByNation: Object.fromEntries(ids.map((id) => [id, 0])),
     },
-    warFatigue: emptyWarFatigue(),
+    warFatigue: emptyWarFatigue(ids),
     warLastBattle: {},
     ceasefires: {},
     ceasefireCooldowns: {},
     sanctions: {},
+    garrisons: {},
+    garrisonFormationYears: {},
+    garrisonMoveYears: {},
     autoSettlement: false,
     autoSettlementDeclined: false,
     tiles,
-    factions: {
-      red: { alive: true, gold: 82, food: 76, population: 18, army: 14, relocations: 0 },
-      blue: { alive: true, gold: 82, food: 76, population: 18, army: 14, relocations: 0 },
-      ochre: { alive: true, gold: 82, food: 76, population: 18, army: 14, relocations: 0 },
-    },
+    factions: Object.fromEntries(
+      aiIds.map((id) => [
+        id,
+        { alive: true, gold: 82, food: 76, population: 18, army: 14, relocations: 0 },
+      ]),
+    ),
     log: [
       {
         year: 1,
-        text: `${variant.name}の地で、四つの${development.name}が大陸の覇権を争い始めた。`,
+        text: `${variant.name}の地で、${realmCount}の${development.name}が大陸の覇権を争い始めた。`,
         kind: '',
         important: true,
         participants: ['player'],
@@ -489,8 +750,8 @@ function createState() {
     victory: false,
   };
 }
-function generateRealms(tiles, seeds) {
-  const desiredSize = Math.min(18, Math.floor((conquerableLand(tiles) - 8) / 4)),
+function generateRealms(tiles, seeds, reserved = new Set(), ids = IDS) {
+  const desiredSize = Math.min(18, Math.floor((conquerableLand(tiles) - 8) / ids.length)),
     growthSize = desiredSize;
   for (let attempt = 0; attempt < 20; attempt++) {
     tiles.forEach((t) => {
@@ -498,9 +759,9 @@ function generateRealms(tiles, seeds) {
       t.capital = false;
       t.building = null;
     });
-    const ids = shuffle([...IDS]),
+    const growthOrder = shuffle([...ids]),
       capitals = {};
-    ids.forEach((id, n) => {
+    growthOrder.forEach((id, n) => {
       const i = seeds[n];
       tiles[i].owner = id;
       tiles[i].capital = true;
@@ -508,8 +769,9 @@ function generateRealms(tiles, seeds) {
       capitals[id] = i;
     });
     let failed = false;
-    while (IDS.some((id) => tiles.filter((t) => t.owner === id).length < growthSize)) {
-      const options = IDS.map((id) => ({ id, size: tiles.filter((t) => t.owner === id).length }))
+    while (ids.some((id) => tiles.filter((t) => t.owner === id).length < growthSize)) {
+      const options = ids
+        .map((id) => ({ id, size: tiles.filter((t) => t.owner === id).length }))
         .filter((x) => x.size < growthSize)
         .sort((a, b) => a.size - b.size + (Math.random() - 0.5));
       let grown = false;
@@ -518,7 +780,7 @@ function generateRealms(tiles, seeds) {
           ...new Set(
             tiles
               .flatMap((t, i) => (t.owner === id ? movementNeighborsIn(tiles, i) : []))
-              .filter((i) => tiles[i].owner === 'neutral'),
+              .filter((i) => tiles[i].owner === 'neutral' && !reserved.has(i)),
           ),
         ];
         if (!frontier.length) continue;
@@ -538,7 +800,7 @@ function generateRealms(tiles, seeds) {
     if (failed) continue;
     if (
       !failed &&
-      IDS.every(
+      ids.every(
         (id) =>
           tiles.filter((t) => t.owner === id).length === desiredSize &&
           tiles.some(
@@ -603,11 +865,11 @@ function potentialBridgeSitesIn(tiles, owner) {
     );
   }).length;
 }
-function generationBalanceMetrics(tiles) {
+function generationBalanceMetrics(tiles, ids = IDS) {
   const gates = tiles
       .map((tile, index) => (['pass', 'ford', 'bridge'].includes(tile.terrain) ? index : -1))
       .filter((index) => index >= 0),
-    nations = IDS.map((id) => {
+    nations = ids.map((id) => {
       const own = tiles
           .map((tile, index) => (tile.owner === id ? index : -1))
           .filter((index) => index >= 0),
@@ -631,7 +893,7 @@ function generationBalanceMetrics(tiles) {
         gateDistance: gates.length
           ? Math.min(...gates.map((gate) => distanceOnGrid(capital, gate)))
           : 0,
-        enemyPressure: IDS.filter((other) => {
+        enemyPressure: ids.filter((other) => {
           if (other === id) return false;
           const enemyCapital = tiles.findIndex((tile) => tile.owner === other && tile.capital);
           return enemyCapital >= 0 && distanceOnGrid(capital, enemyCapital) <= 6;
@@ -656,8 +918,8 @@ function generationBalanceMetrics(tiles) {
     bridgeSiteSpread: valueSpread(nations.map((nation) => nation.bridgeSites)),
   };
 }
-function generationFairEnough(tiles) {
-  const metrics = generationBalanceMetrics(tiles);
+function generationFairEnough(tiles, ids = IDS) {
+  const metrics = generationBalanceMetrics(tiles, ids);
   return (
     metrics.singleExitDisadvantage === 0 &&
     metrics.exitSpread <= GENERATION_LIMITS.exitSpread &&
@@ -726,6 +988,10 @@ function fallbackRealms(tiles) {
 function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+function savedNationIds(value) {
+  if (!Object.hasOwn(value, 'nationIds')) return [...IDS];
+  return validNationIds(value.nationIds) ? [...value.nationIds] : null;
+}
 function isValidSaveShape(value) {
   if (
     !isRecord(value) ||
@@ -734,11 +1000,13 @@ function isValidSaveShape(value) {
     !isRecord(value.factions)
   )
     return false;
-  if (!['red', 'blue', 'ochre'].every((id) => isRecord(value.factions[id]))) return false;
+  const ids = savedNationIds(value);
+  if (!ids || !ids.filter((id) => id !== 'player').every((id) => isRecord(value.factions[id])))
+    return false;
   return value.tiles.every(
     (tile) =>
       isRecord(tile) &&
-      ['void', 'neutral', ...IDS].includes(tile.owner) &&
+      ['void', 'neutral', ...ids].includes(tile.owner) &&
       Object.hasOwn(TERRAIN, tile.terrain) &&
       (tile.building === null ||
         tile.building === 'capital' ||
@@ -782,28 +1050,26 @@ function importantChronicleText(text = '') {
     text.includes('一つの王冠')
   );
 }
-function legacyChronicleInvolvesPlayer(text = '', index = -1, log = []) {
+function legacyChronicleInvolvesPlayer(text = '', index = -1, log = [], ids = IDS) {
   if (text.includes(META.player.name)) return true;
   if (text.includes('が中立地帯を開拓')) return false;
   if (text.includes('で食料不足が起こり')) return false;
   if (text.includes('列国がその拡大を警戒')) return false;
   if (text.includes('新たな大陸の覇者')) return false;
-  const enemyMentions = ['red', 'blue', 'ochre'].filter((id) =>
-    text.includes(META[id].name),
-  ).length;
+  const enemyMentions = ids.filter((id) => id !== 'player' && text.includes(META[id].name)).length;
   if ((text.includes('遷都') || text.includes('国家の存続')) && !text.includes(META.player.name)) {
     const previous = log[index - 1];
     if (!previous || previous.year !== log[index]?.year) return false;
-    const previousEnemyMentions = ['red', 'blue', 'ochre'].filter((id) =>
-      (previous.text || '').includes(META[id].name),
+    const previousEnemyMentions = ids.filter(
+      (id) => id !== 'player' && (previous.text || '').includes(META[id].name),
     ).length;
     return previousEnemyMentions === 1;
   }
   return enemyMentions < 2;
 }
-function chronicleInvolvesPlayer(entry, index, log) {
+function chronicleInvolvesPlayer(entry, index, log, ids) {
   if (Array.isArray(entry.participants)) return entry.participants.includes('player');
-  return legacyChronicleInvolvesPlayer(entry.text || '', index, log);
+  return legacyChronicleInvolvesPlayer(entry.text || '', index, log, ids);
 }
 function trimChronicle(log = [], ordinaryLimit = 500) {
   let ordinaryToDrop = Math.max(0, log.filter((entry) => !entry.important).length - ordinaryLimit);
@@ -816,51 +1082,53 @@ function trimChronicle(log = [], ordinaryLimit = 500) {
     return true;
   });
 }
-function cleanChronicle(log = []) {
-  const cleaned = log.filter(chronicleInvolvesPlayer).flatMap((entry) => {
-      const text = entry.text || '',
-        capitalDefense = text.includes('首都防衛の反撃') || text.includes('首都防衛反撃');
-      if (capitalDefense && !text.includes(META.player.name)) return [];
-      if (
-        text.includes('遷都先となる残存領土がなく') ||
-        text.includes('遷都判定に失敗') ||
-        text.includes('遷都抽選に成功')
-      )
-        return [];
-      if (text.includes('遷都判定に成功')) {
-        const nation = text.split('は遷都判定に成功')[0],
-          destination = text.match(/、([^、。]+)へ遷都した/)?.[1];
+function cleanChronicle(log = [], ids = nationIds()) {
+  const cleaned = log
+      .filter((entry, index) => chronicleInvolvesPlayer(entry, index, log, ids))
+      .flatMap((entry) => {
+        const text = entry.text || '',
+          capitalDefense = text.includes('首都防衛の反撃') || text.includes('首都防衛反撃');
+        if (capitalDefense && !text.includes(META.player.name)) return [];
+        if (
+          text.includes('遷都先となる残存領土がなく') ||
+          text.includes('遷都判定に失敗') ||
+          text.includes('遷都抽選に成功')
+        )
+          return [];
+        if (text.includes('遷都判定に成功')) {
+          const nation = text.split('は遷都判定に成功')[0],
+            destination = text.match(/、([^、。]+)へ遷都した/)?.[1];
+          return [
+            {
+              ...entry,
+              text: destination
+                ? `${nation}は${destination}へ遷都し、国家の存続に成功した。`
+                : `${nation}は遷都し、国家の存続に成功した。`,
+              important: true,
+              participants: ['player'],
+            },
+          ];
+        }
+        if (text.includes('王都を陥落させ、遷都にも失敗した'))
+          return [
+            {
+              ...entry,
+              text: text.replace(
+                '王都を陥落させ、遷都にも失敗した。',
+                '王都を攻略し、アルデン王国は崩壊した。',
+              ),
+              important: true,
+              participants: ['player'],
+            },
+          ];
         return [
           {
             ...entry,
-            text: destination
-              ? `${nation}は${destination}へ遷都し、国家の存続に成功した。`
-              : `${nation}は遷都し、国家の存続に成功した。`,
-            important: true,
-            participants: ['player'],
+            important: !!entry.important || importantChronicleText(text),
+            participants: Array.isArray(entry.participants) ? entry.participants : ['player'],
           },
         ];
-      }
-      if (text.includes('王都を陥落させ、遷都にも失敗した'))
-        return [
-          {
-            ...entry,
-            text: text.replace(
-              '王都を陥落させ、遷都にも失敗した。',
-              '王都を攻略し、アルデン王国は崩壊した。',
-            ),
-            important: true,
-            participants: ['player'],
-          },
-        ];
-      return [
-        {
-          ...entry,
-          important: !!entry.important || importantChronicleText(text),
-          participants: Array.isArray(entry.participants) ? entry.participants : ['player'],
-        },
-      ];
-    }),
+      }),
     unification = cleaned.filter(
       (e) => e.text.includes('一つの王冠の下に統一') || e.text.includes('新たな大陸の覇者'),
     );
@@ -872,6 +1140,9 @@ function safeInteger(value, fallback = 0, min = 0) {
 function migrate(s) {
   if (!isValidSaveShape(s)) throw new Error('Invalid save data');
   const oldVersion = safeInteger(s.version, 0);
+  s.nationIds = savedNationIds(s);
+  const ids = nationIds(s),
+    aiIds = aiNationIds(s);
   s.worldName = typeof s.worldName === 'string' ? s.worldName : '四王分立';
   s.developmentName = typeof s.developmentName === 'string' ? s.developmentName : '均衡領';
   s.year = safeInteger(s.year, 1, 1);
@@ -893,14 +1164,23 @@ function migrate(s) {
   s.metrics.rapidRecaptures = safeInteger(s.metrics.rapidRecaptures, 0);
   s.metrics.repeatedRecaptures = safeInteger(s.metrics.repeatedRecaptures, 0);
   s.metrics.ceasefires = safeInteger(s.metrics.ceasefires, 0);
+  s.metrics.ceasefireRenewals = safeInteger(s.metrics.ceasefireRenewals, 0);
   s.metrics.betrayals = safeInteger(s.metrics.betrayals, 0);
   s.metrics.betrayalsByNation = Object.fromEntries(
-    IDS.map((id) => [id, safeInteger(s.metrics.betrayalsByNation?.[id], 0)]),
+    ids.map((id) => [id, safeInteger(s.metrics.betrayalsByNation?.[id], 0)]),
   );
-  const fatigue = emptyWarFatigue();
+  for (const key of [
+    'garrisonsFormed',
+    'garrisonsMoved',
+    'garrisonsLost',
+    'garrisonGoldSpent',
+    'garrisonFoodSpent',
+  ])
+    s.metrics[key] = safeInteger(s.metrics[key], 0);
+  const fatigue = emptyWarFatigue(ids);
   if (isRecord(s.warFatigue))
-    for (const id of IDS)
-      for (const opponent of IDS)
+    for (const id of ids)
+      for (const opponent of ids)
         if (id !== opponent)
           fatigue[id][opponent] = Math.min(100, safeInteger(s.warFatigue[id]?.[opponent], 0));
   s.warFatigue = fatigue;
@@ -915,7 +1195,7 @@ function migrate(s) {
     return (
       countries.length === 2 &&
       countries[0] !== countries[1] &&
-      countries.every((id) => IDS.includes(id))
+      countries.every((id) => ids.includes(id))
     );
   };
   s.ceasefires = Object.fromEntries(
@@ -932,6 +1212,7 @@ function migrate(s) {
         {
           startYear: safeInteger(value.startYear, s.year, 1),
           endYear: safeInteger(value.endYear, s.year + 1, s.year + 1),
+          renewals: safeInteger(value.renewals, 0),
         },
       ]),
   );
@@ -942,12 +1223,34 @@ function migrate(s) {
   );
   s.sanctions = Object.fromEntries(
     Object.entries(isRecord(s.sanctions) ? s.sanctions : {})
-      .filter(([id, year]) => IDS.includes(id) && Number.isFinite(year) && year > s.year)
+      .filter(([id, year]) => ids.includes(id) && Number.isFinite(year) && year > s.year)
       .map(([id, year]) => [id, safeInteger(year, s.year + 1, s.year + 1)]),
   );
+  s.garrisons = Object.fromEntries(
+    Object.entries(isRecord(s.garrisons) ? s.garrisons : {})
+      .filter(
+        ([id, index]) =>
+          ids.includes(id) &&
+          Number.isInteger(index) &&
+          index >= 0 &&
+          index < s.tiles.length &&
+          s.tiles[index].owner === id &&
+          !s.tiles[index].occupation &&
+          !TERRAIN[s.tiles[index].terrain]?.blocked,
+      )
+      .map(([id, index]) => [id, index]),
+  );
+  const validGarrisonYears = (value) =>
+    Object.fromEntries(
+      Object.entries(isRecord(value) ? value : {})
+        .filter(([id, year]) => ids.includes(id) && Number.isFinite(year) && year > s.year)
+        .map(([id, year]) => [id, safeInteger(year, s.year + 1, s.year + 1)]),
+    );
+  s.garrisonFormationYears = validGarrisonYears(s.garrisonFormationYears);
+  s.garrisonMoveYears = validGarrisonYears(s.garrisonMoveYears);
   s.aiInitiativeOffset = Number.isFinite(s.aiInitiativeOffset)
-    ? safeInteger(s.aiInitiativeOffset) % 3
-    : rand(3);
+    ? safeInteger(s.aiInitiativeOffset) % aiIds.length
+    : rand(aiIds.length);
   if (oldVersion < 9 || !isRecord(s.threatNotices) || !Number.isFinite(s.threatNotices.level))
     s.threatNotices = { leader: null, level: 0 };
   if (oldVersion < 10) {
@@ -959,6 +1262,7 @@ function migrate(s) {
         if (t.owner === 'player') {
           t.owner = 'neutral';
           t.isolation = 0;
+          t.supplyStatus = 'full';
           t.occupation = 0;
         }
       });
@@ -970,7 +1274,7 @@ function migrate(s) {
   s.autoSettlement = !!s.autoSettlement;
   s.autoSettlementDeclined = !!s.autoSettlementDeclined;
   if (s.gameOver || s.playerDefeated) s.autoSettlement = false;
-  for (const id of ['red', 'blue', 'ochre']) {
+  for (const id of aiIds) {
     const f = s.factions[id];
     f.alive = f.alive !== false;
     f.gold = safeInteger(f.gold, 82);
@@ -979,12 +1283,14 @@ function migrate(s) {
     f.army = safeInteger(f.army, 16);
     f.relocations = safeInteger(f.relocations, 0);
   }
-  delete s.factions.red.consolidating;
-  delete s.factions.red.consolidated;
+  if (s.factions.red) {
+    delete s.factions.red.consolidating;
+    delete s.factions.red.consolidated;
+  }
   s.tiles.forEach((t) => {
     t.riverAxis = ['vertical', 'horizontal'].includes(t.riverAxis) ? t.riverAxis : null;
     t.bridgeBuilder =
-      t.terrain === 'bridge' && IDS.includes(t.bridgeBuilder) ? t.bridgeBuilder : null;
+      t.terrain === 'bridge' && ids.includes(t.bridgeBuilder) ? t.bridgeBuilder : null;
     if (TERRAIN[t.terrain]?.blocked) {
       t.owner = 'void';
       t.building = null;
@@ -992,6 +1298,11 @@ function migrate(s) {
     } else if (t.owner === 'void') t.owner = 'neutral';
     t.capital = !!t.capital;
     t.isolation = safeInteger(t.isolation, 0);
+    t.supplyStatus = ['full', 'limited', 'cut'].includes(t.supplyStatus)
+      ? t.supplyStatus
+      : t.isolation
+        ? 'cut'
+        : 'full';
     t.fortIdle = safeInteger(t.fortIdle, 0);
     t.captureYears = (Array.isArray(t.captureYears) ? t.captureYears : [])
       .filter(Number.isFinite)
@@ -1003,8 +1314,8 @@ function migrate(s) {
       t.occupation = 1;
     delete t.unrest;
   });
-  s.log = cleanChronicle(Array.isArray(s.log) ? s.log : []);
-  s.version = 22;
+  s.log = cleanChronicle(Array.isArray(s.log) ? s.log : [], ids);
+  s.version = SAVE_VERSION;
   return s;
 }
 function save() {
@@ -1032,9 +1343,12 @@ function stats(id) {
 }
 function income(id) {
   const s = stats(id),
-    farmFood = state.tiles
-      .filter((tile) => tile.owner === id && !tile.occupation && tile.building === 'farm')
-      .reduce((total, tile) => total + terrainFarmFood(tile), 0),
+    farmFood = state.tiles.reduce(
+      (total, tile, index) =>
+        total +
+        (tile.owner === id && !tile.occupation && tile.building === 'farm' ? farmFoodAt(index) : 0),
+      0,
+    ),
     gold = s.productiveLand + s.towns * 5 - Math.ceil(s.army / 5),
     food = farmFood - Math.ceil(s.pop / 2) - Math.ceil(s.army / 3);
   return { gold, food, capacity: s.capacity };

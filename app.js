@@ -3,6 +3,42 @@
 function endTurn() {
   if (state.gameOver || state.autoSettlement) return;
   clearPlayerUndo();
+  const renewalPartner = ceasefirePartner('player');
+  if (renewalPartner && !state.playerDefeated && ceasefireRenewalDue('player', renewalPartner)) {
+    const decision = ceasefireRenewalDecision('player', renewalPartner),
+      aiWants = decision.secondWants,
+      aiAccepts = decision.secondAccepts;
+    if (globalThis.__HEADLESS__) {
+      if (decision.agreed) renewCeasefire('player', renewalPartner);
+      continueEndTurn();
+      return;
+    }
+    showDialog(
+      aiWants ? '停戦延長の申し入れ' : '停戦期間が満了します',
+      aiWants
+        ? `<p><strong>${META[renewalPartner].name}</strong>が停戦の継続を希望しています。応じると、現在の停戦をさらに5年間延長します。</p>`
+        : `<p><strong>${META[renewalPartner].name}</strong>との停戦をさらに5年間延長するよう提案しますか。</p><p>成立見込み：<strong>${ceasefireLikelihood(renewalPartner, 'player')}</strong></p>`,
+      aiWants ? '延長を受け入れる' : '延長を提案する',
+      () => {
+        const renewed = (aiWants || aiAccepts) && renewCeasefire('player', renewalPartner);
+        continueEndTurn();
+        toast(
+          renewed
+            ? `${META[renewalPartner].name}との停戦を5年間延長しました`
+            : `${META[renewalPartner].name}は延長を拒否しました`,
+        );
+      },
+      'DIPLOMACY',
+      {
+        label: '延長しない',
+        handler: continueEndTurn,
+      },
+    );
+    return;
+  }
+  continueEndTurn();
+}
+function continueEndTurn() {
   runAiCeasefireDiplomacy();
   const offer = aiCeasefireOfferToPlayer();
   if (offer) {
@@ -109,9 +145,7 @@ function checkVictory() {
     return;
   }
   if (state.playerDefeated) {
-    const ruler = ['red', 'blue', 'ochre'].find(
-      (id) => state.factions[id].alive && land(id) === totalLand,
-    );
+    const ruler = aiNationIds().find((id) => state.factions[id].alive && land(id) === totalLand);
     if (ruler) {
       state.gameOver = true;
       addLog(`${META[ruler].name}が全${totalLand}領を統一し、新たな大陸の覇者となった。`, 'war', {
@@ -142,6 +176,7 @@ function gameOver(reason) {
     if (t.owner === 'player') {
       t.owner = 'neutral';
       t.isolation = 0;
+      t.supplyStatus = 'full';
       t.occupation = 0;
       t.capital = false;
     }
@@ -177,6 +212,7 @@ function viewChronicle() {
 }
 function showDialog(title, body, action, handler, eyebrow = '王国評議会', secondary = null) {
   const second = $('dialogSecondary');
+  $('dialog').classList.remove('help-dialog');
   $('dialogTitle').textContent = title;
   $('dialogBody').innerHTML = body;
   $('dialogAction').textContent = action;
@@ -195,34 +231,111 @@ function showDialog(title, body, action, handler, eyebrow = '王国評議会', s
   }
   $('dialog').showModal();
 }
-function help() {
-  showDialog(
-    '統一への手引き',
-    `<ul><li>新しい大陸ごとに国境・首都・地形・初期施設の構成が変わります。</li><li>1年に使える命令は、すべての国で2回です。</li><li>金貨は領土1マスにつき1と町1つにつき5を得て、兵力5につき1を軍の維持に使います。施設維持費はありません。</li><li>食料は農場1つにつき8を得て、民2人につき1、兵力3につき1を消費します。貯蔵上限はありません。</li><li>食料に余裕があれば、民は町5個までは年1、6～15個は年2、16～25個は年3のように段階的に増えます。町は人口上限も6増やします。</li><li>敵領を奪うと、まず再攻撃されない占領保護期間に入ります。次は奪還可能だが占領側も侵攻拠点にできない安定化期間となり、そこを守り切ると完全な領土になります。</li><li>占領保護中と安定化中は収入・施設効果がなく、侵攻や開拓の足場にもできません。安定化中は施設の建設と撤去ができます。</li><li>AI三国は毎年先手を交代し、1命令ずつ交互に行動します。占領期間も年末に全国家まとめて進むため、行動順による保護期間の差はありません。</li><li>敵は勝算と防衛予備兵力を考え、侵攻失敗後は同じ年に再攻撃しません。</li><li>AI三国の初期資源・施設効果・徴兵費用・戦闘式・命令数は共通ですが、資源の使い方と戦争判断が異なります。</li><li>ヴァルドールは兵舎と突破口を重視し、攻撃後は町と軍備を整えて次の攻勢に備えます。</li><li>セレノアは町・人口・金貨を蓄え、十分に有利な戦いへ絞って進出します。</li><li>ローデンは農場・前線砦・人口を整え、余力がある年は連続徴兵して長期戦から反攻します。</li><li>敵は補給切れの土地、領土を首都から分断できる要地、首都とその突破口を優先して攻撃します。</li><li>同じ土地が6年以内に2回以上奪い合われると、AIはその土地への侵攻を一時中止し、別の前線や内政を選びます。敵首都と自国首都を守る反撃だけは例外です。</li><li>AI国家は自国首都から2マス以内に迫った敵領を、相手が自国でも他のAI国家でも最優先で反撃します。この首都防衛行動と結果は年代記に記録されます。</li><li>最大国が35領以上かつ2位に5領差をつけると、国を問わず列国の警戒対象となり、攻撃先として優先されます。警戒によって命令数や兵力が増えることはありません。</li><li>戦争疲弊などの条件が揃うと、二国は5年間の停戦を結びます。一国が結べる停戦は一件までで、終了または拒否後は3年間再交渉できません。最後の二国間では新しい停戦を結べません。</li><li>停戦は破棄して奇襲できます。最初の侵攻に+2の補正が付きますが、条約を破った国は8年間停戦できず、戦争疲弊に関係なく全国家から攻撃を優先されます。</li><li>三国の徴兵費用と初期資源は同じですが、徴兵する時期・残す人口・防衛予備兵力は国家戦略によって異なります。</li><li>首都陥落時は全国家が遷都を試みます。成功率は50%、25%、12.5%と半減し、年代記には遷都成功か国家崩壊の結果だけが記録されます。</li><li>遷都に失敗した敵国は崩壊して残領が中立化し、自国はゲームオーバーになります。</li><li>中立地は、隣接する国が金貨・食料・民を使って開拓できます。開拓地は保護期間を経ず、安定化期間から始まります。</li><li>国境線を越えて他国領を選ぶと侵攻できます。</li><li>兵舎は守備を3高め、隣接地への侵攻を3支援します。砦は建設地の守備を9高めますが、侵攻支援は行いません。</li><li>首都から自国領でつながらない土地は補給切れとなり、毎年守備が2低下します。再接続すると回復します。</li><li>建物撤去を選ぶと、命令1で自国の建物を更地に戻せます。安定化中の施設も撤去できます。</li><li>AI国家は敵領が2マス以内にない状態が3年続いた砦を、重要行動の後に年1つまで撤去します。</li><li>100マスすべてを自国領にすると統一達成です。</li></ul>`,
-    '地図へ戻る',
-    null,
-    'HOW TO UNIFY',
-  );
-  $('dialogBody').innerHTML = $('dialogBody')
-    .innerHTML.replace(
-      '食料は農場1つにつき8を得て、',
-      '食料は通常の農場1つにつき8、肥沃地では10、湿地では6を得て、',
-    )
-    .replace(
-      '</li><li>食料に余裕があれば、',
-      `</li><li>${terrainHelpSummary()}。</li><li>山岳は尾根を作り、川は大陸によって蛇行や支流が生まれ、川自体がない場合もあります。</li><li>食料に余裕があれば、`,
-      '</li><li>通常の川には、一国1本まで金貨40・食料15・命令1で橋を建設できます。片岸に首都とつながった安定領、対岸に自国領か中立地が必要で、既存の橋・浅瀬から2マス以内には建設できません。完成した橋は全国家が利用できます。</li><li>食料に余裕があれば、',
-    )
-    .replace('最大国が35領以上かつ', '最大国が領有可能地の35%以上かつ')
-    .replace(
-      '100マスすべてを自国領にすると統一達成です。',
+const HELP_SECTIONS = [
+  {
+    id: 'basic',
+    label: '基本',
+    items: [
+      '1年に使える命令は、すべての国で2回です。統一暦200年以降は長期戦を進めるため、すべての国で3回になります。',
+      '中立地は、隣接する国が金貨・食料・民を使って開拓できます。開拓地は保護期間を経ず、安定化期間から始まります。',
+      '国境線を越えて他国領を選ぶと侵攻できます。',
       '山岳・川・湖を除く、領有可能な全土地を自国領にすると統一達成です。',
-    );
+    ],
+  },
+  {
+    id: 'economy',
+    label: '内政・施設',
+    items: [
+      '金貨は領土1マスにつき1と町1つにつき5を得て、兵力5につき1を軍の維持に使います。施設維持費はありません。',
+      '食料は通常の農場1つにつき8、肥沃地では10、湿地では6を得ます。川・浅瀬・橋・湖に隣接する農場は、地形効果と重複してさらに2を得ます。民2人につき1、兵力3につき1を消費し、貯蔵上限はありません。',
+      '食料に余裕があれば、民は町5個までは年1、6～15個は年2、16～25個は年3のように段階的に増えます。町は人口上限も6増やします。',
+      '建物撤去を選ぶと、命令1で自国の建物を更地に戻せます。安定化中の施設も撤去できます。',
+    ],
+  },
+  {
+    id: 'war',
+    label: '戦争・補給',
+    items: [
+      '敵領を奪うと、まず再攻撃されない占領保護期間に入ります。次は奪還可能だが占領側も侵攻拠点にできない安定化期間となり、そこを守り切ると完全な領土になります。',
+      '占領保護中と安定化中は収入・施設効果がなく、侵攻や開拓の足場にもできません。安定化中は施設の建設と撤去ができます。',
+      '兵舎は守備を3高め、隣接地への侵攻を3支援します。砦は建設地の守備を9高めますが、侵攻支援は行いません。',
+      '駐屯兵団は各国1個まで、首都と補給がつながる安定領に金貨20・食料15・民1・命令1で編成し、その土地の守備を5高めます。移動は金貨5・食料5・命令1で、移動した年から2年後に再移動できます。',
+      '駐屯地を奪われると駐屯兵団は消滅し、消滅した年から5年後に再編成できます。補給切れによる守備低下は駐屯兵団がいても通常どおり進みます。',
+      '陸路・橋・浅瀬で首都とつながる領土は完全補給です。普通の川越しだけでつながる領土は限定補給となり、守備が1低下します。どの経路もない補給切れ領土は毎年さらに守備が2低下します。',
+      '補給切れ領土だけを起点に侵攻する場合は、接する補給切れ領のうち最も高い守備力を侵攻兵力として扱います。',
+      '首都陥落時は全国家が遷都を試みます。成功率は50%、25%、12.5%と半減し、年代記には遷都成功か国家崩壊の結果だけが記録されます。',
+      '遷都に失敗した敵国は崩壊して残領が中立化し、自国はゲームオーバーになります。',
+    ],
+  },
+  {
+    id: 'terrain',
+    label: '地形・橋',
+    items: [
+      () => `${terrainHelpSummary()}。`,
+      '山岳は尾根を作り、川は大陸によって蛇行や支流が生まれ、川自体がない場合もあります。',
+      '通常の川には、一国1本まで金貨40・食料15・命令1で橋を建設できます。川幅が2マスなら2マスを一度に架橋し、金貨80・食料30を使います。',
+      '橋は片岸に首都とつながった安定領、対岸に自国領か中立地が必要で、既存の橋・浅瀬から2マス以内には建設できません。完成した橋は全国家が利用できます。',
+    ],
+  },
+  {
+    id: 'diplomacy-ai',
+    label: '外交・AI',
+    items: [
+      '敵は勝算と防衛予備兵力を考え、侵攻失敗後は同じ年に再攻撃しません。',
+      'AI三国の初期資源・施設効果・徴兵費用・戦闘式・命令数は共通ですが、資源の使い方と戦争判断が異なります。',
+      'ヴァルドールは兵舎と突破口を重視し、攻撃後は町と軍備を整えて次の攻勢に備えます。',
+      'セレノアは町・人口・金貨を蓄え、十分に有利な戦いへ絞って進出します。',
+      'ローデンは農場・前線砦・人口を整え、食料80・人口12・目標兵力を満たすと、明確に有利な攻勢へ蓄えを使います。',
+      '敵は補給切れの土地、領土を首都から分断できる要地、首都とその突破口を優先して攻撃します。',
+      '同じ土地が6年以内に2回以上奪い合われると、AIはその土地への侵攻を一時中止し、別の前線や内政を選びます。敵首都と自国首都を守る反撃だけは例外です。',
+      'AI国家は自国首都から2マス以内に迫った敵領を、相手が自国でも他のAI国家でも最優先で反撃します。',
+      '最大国が領有可能地の35%以上かつ2位に5領差をつけると、国を問わず列国の警戒対象となります。警戒によって命令数や兵力が増えることはありません。',
+      '戦争疲弊などの条件が揃うと、二国は5年間の停戦を結びます。満了時に双方が応じればさらに5年間延長でき、延長回数に上限はありません。一国が結べる停戦は一件までです。',
+      '停戦を延長せず終了した場合または拒否後は3年間再交渉できず、最後の二国間では新しい停戦を結べません。',
+      '停戦は破棄して奇襲できます。最初の侵攻に+2の補正が付きますが、条約を破った国は8年間停戦できず、全国家から攻撃を優先されます。',
+      '三国の徴兵費用と初期資源は同じですが、徴兵する時期・残す人口・防衛予備兵力は国家戦略によって異なります。',
+      'AI国家は敵領が2マス以内にない状態が3年続いた砦を、重要行動の後に年1つまで撤去します。',
+    ],
+  },
+  {
+    id: 'other',
+    label: 'その他',
+    items: [
+      '新しい大陸ごとに国境・首都・地形・初期施設の構成が変わります。初期地形には国ごとの有利不利が生まれる場合があります。',
+      'AI三国は毎年先手を交代し、1命令ずつ交互に行動します。占領期間も年末に全国家まとめて進むため、行動順による保護期間の差はありません。',
+      '首都防衛の行動や、自国が関係する遷都・国家崩壊などの重要な出来事は年代記に記録されます。',
+    ],
+  },
+];
+function helpMarkup() {
+  const sections = HELP_SECTIONS.map(
+    (section) =>
+      `<details class="help-section" data-help-section="${section.id}"><summary><span>${section.label}</span><i class="help-chevron" aria-hidden="true"></i></summary><div class="help-section-body"><ul>${section.items.map((item) => `<li>${typeof item === 'function' ? item() : item}</li>`).join('')}</ul></div></details>`,
+  ).join('');
+  return `<div class="help-accordion-actions"><button type="button" data-help-expand>すべて開く</button><button type="button" data-help-collapse>すべて閉じる</button></div><div class="help-accordion">${sections}</div>`;
+}
+function bindHelpAccordion() {
+  const sections = [...document.querySelectorAll('[data-help-section]')];
+  document.querySelector('[data-help-expand]')?.addEventListener('click', () => {
+    sections.forEach((section) => (section.open = true));
+  });
+  document.querySelector('[data-help-collapse]')?.addEventListener('click', () => {
+    sections.forEach((section) => (section.open = false));
+  });
+}
+function help() {
+  showDialog('統一への手引き', helpMarkup(), '地図へ戻る', null, 'HOW TO UNIFY');
+  $('dialog').classList.add('help-dialog');
+  bindHelpAccordion();
+}
+function selectedWorldType() {
+  const selected = $('worldTypeSelect').value;
+  return WORLD_VARIANTS.some((variant) => variant.name === selected) ? selected : '';
 }
 function newGame(force = false) {
   const start = () => {
     clearTimeout(autoSettlementTimer);
-    state = createState();
+    state = createState(selectedWorldType());
     selectedAction = 'settle';
     selectedTile = null;
     chronicleTimeline = false;
@@ -242,6 +355,11 @@ function newGame(force = false) {
     'NEW CONTINENT',
   );
 }
+
+$('worldTypeSelect').innerHTML = [
+  '<option value="">ランダム</option>',
+  ...WORLD_VARIANTS.map((variant) => `<option value="${variant.name}">${variant.name}</option>`),
+].join('');
 
 document.querySelectorAll('[data-action]').forEach((b) =>
   b.addEventListener('click', () => {
@@ -273,9 +391,10 @@ if (state.autoSettlement) scheduleAutoSettlement();
 else setTimeout(maybeOfferAutoSettlement, 0);
 if ('serviceWorker' in navigator)
   window.addEventListener('load', () => {
-    if (navigator.serviceWorker.controller) return;
+    const localDevelopment = ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (navigator.serviceWorker.controller && !localDevelopment) return;
     navigator.serviceWorker
-      .register('sw.js?v=72')
+      .register('sw.js?v=98')
       .then(() => navigator.serviceWorker.ready)
       .then(() => {
         const readyKey = `${SAVE_KEY}-offline-ready`;

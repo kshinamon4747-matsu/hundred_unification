@@ -1,6 +1,26 @@
 'use strict';
 
 const BRIDGE_COST = { gold: 40, food: 15 };
+const GARRISON_COSTS = {
+  standard: { gold: 30, food: 20, population: 1 },
+  light: { gold: 20, food: 15, population: 1 },
+};
+const GARRISON_MOVE_COST = { gold: 5, food: 5 };
+const GARRISON_DEFENSE = 5;
+
+function garrisonExperimentEnabled() {
+  return globalThis.__GARRISON_EXPERIMENT__ !== false;
+}
+function garrisonLocation(id) {
+  return garrisonExperimentEnabled() ? (state.garrisons?.[id] ?? -1) : -1;
+}
+function garrisonFormationCost() {
+  return GARRISON_COSTS[globalThis.__GARRISON_COST_MODE__ || 'light'] || GARRISON_COSTS.light;
+}
+function garrisonDefenseAt(i) {
+  const owner = state.tiles[i]?.owner;
+  return owner && garrisonLocation(owner) === i ? GARRISON_DEFENSE : 0;
+}
 
 function tileDefense(i) {
   const t = state.tiles[i];
@@ -8,7 +28,22 @@ function tileDefense(i) {
   if (t.capital) d += 14;
   else if (!t.occupation && BUILDINGS[t.building]) d += BUILDINGS[t.building].def;
   const f = t.owner === 'player' ? state.army : state.factions[t.owner]?.army || 0;
-  return Math.max(0, d + Math.floor(f / 5) - (t.isolation || 0));
+  return Math.max(0, d + Math.floor(f / 5) + garrisonDefenseAt(i) - (t.isolation || 0));
+}
+function invasionOrigin(target, attacker) {
+  const sources = movementNeighbors(target).filter(
+      (i) => state.tiles[i].owner === attacker && !state.tiles[i].occupation,
+    ),
+    supplied = sources.filter((i) => state.tiles[i].supplyStatus !== 'cut'),
+    candidates = supplied.length ? supplied : sources;
+  if (!candidates.length) return { index: -1, cutOff: false };
+  const index = [...candidates].sort((a, b) => tileDefense(b) - tileDefense(a))[0];
+  return { index, cutOff: !supplied.length };
+}
+function invasionArmyStrength(target, attacker) {
+  const origin = invasionOrigin(target, attacker);
+  if (origin.cutOff) return tileDefense(origin.index);
+  return attacker === 'player' ? state.army : state.factions[attacker]?.army || 0;
 }
 function crossingDefenseBonus(attacker, target) {
   return terrainDefinition(attackCrossing(attacker, target)).crossingDefense || 0;
@@ -33,7 +68,8 @@ function warFatigueStatus(id, opponent) {
   return { text: '平静', tone: 'calm', value };
 }
 function addWarFatigue(id, opponent, losses) {
-  if (!IDS.includes(id) || !IDS.includes(opponent) || id === opponent) return;
+  const ids = nationIds();
+  if (!ids.includes(id) || !ids.includes(opponent) || id === opponent) return;
   state.warFatigue ??= emptyWarFatigue();
   state.warFatigue[id] ??= {};
   const increase = Math.min(10, 2 + Math.max(0, losses));
@@ -48,10 +84,11 @@ function recordWarBattle(attacker, defender, attackerLosses, defenderLosses) {
 function advanceWarFatigue() {
   state.warFatigue ??= emptyWarFatigue();
   state.warLastBattle ??= {};
-  for (let a = 0; a < IDS.length; a++)
-    for (let b = a + 1; b < IDS.length; b++) {
-      const first = IDS[a],
-        second = IDS[b];
+  const ids = nationIds();
+  for (let a = 0; a < ids.length; a++)
+    for (let b = a + 1; b < ids.length; b++) {
+      const first = ids[a],
+        second = ids[b];
       if (state.warLastBattle[warPairKey(first, second)] === state.year) continue;
       state.warFatigue[first][second] = Math.max(0, warFatigueValue(first, second) - 8);
       state.warFatigue[second][first] = Math.max(0, warFatigueValue(second, first) - 8);
@@ -59,7 +96,7 @@ function advanceWarFatigue() {
 }
 function clearWarFatigueFor(id) {
   if (!state.warFatigue) return;
-  for (const opponent of IDS)
+  for (const opponent of nationIds())
     if (opponent !== id) {
       if (state.warFatigue[id]) state.warFatigue[id][opponent] = 0;
       if (state.warFatigue[opponent]) state.warFatigue[opponent][id] = 0;
@@ -78,7 +115,7 @@ function nationAlive(id) {
     : !!state.factions[id]?.alive;
 }
 function livingNations() {
-  return IDS.filter(nationAlive);
+  return nationIds().filter(nationAlive);
 }
 function activeCeasefire(a, b) {
   const agreement = state.ceasefires?.[diplomacyPairKey(a, b)];
@@ -108,7 +145,8 @@ function isSanctioned(id) {
   return sanctionRemaining(id) > 0;
 }
 function ceasefireProposalStatus(a, b) {
-  if (!IDS.includes(a) || !IDS.includes(b) || a === b)
+  const ids = nationIds();
+  if (!ids.includes(a) || !ids.includes(b) || a === b)
     return { ok: false, reason: '停戦相手を選べません' };
   if (!nationAlive(a) || !nationAlive(b)) return { ok: false, reason: '国家が存続していません' };
   if (isSanctioned(a) || isSanctioned(b))
@@ -171,11 +209,39 @@ function beginCeasefire(a, b) {
   state.ceasefires ??= {};
   state.ceasefireCooldowns ??= {};
   const pair = diplomacyPairKey(a, b);
-  state.ceasefires[pair] = { startYear: state.year, endYear: state.year + 5 };
+  state.ceasefires[pair] = { startYear: state.year, endYear: state.year + 5, renewals: 0 };
   delete state.ceasefireCooldowns[pair];
   state.metrics ??= {};
   state.metrics.ceasefires = (state.metrics.ceasefires || 0) + 1;
   addLog(`${META[a].name}と${META[b].name}が5年間の停戦を結んだ。`, '', {
+    participants: [a, b],
+  });
+  return true;
+}
+function ceasefireRenewalDue(a, b) {
+  const agreement = state.ceasefires?.[diplomacyPairKey(a, b)];
+  return !!agreement && agreement.endYear - state.year === 1;
+}
+function ceasefireRenewalDecision(a, b) {
+  const first = ceasefireWillingness(a, b),
+    second = ceasefireWillingness(b, a);
+  return {
+    firstWants: first >= 55,
+    secondWants: second >= 55,
+    firstAccepts: first >= 40,
+    secondAccepts: second >= 40,
+    agreed: (first >= 55 && second >= 40) || (second >= 55 && first >= 40),
+  };
+}
+function renewCeasefire(a, b) {
+  if (!ceasefireRenewalDue(a, b) || !nationAlive(a) || !nationAlive(b)) return false;
+  const pair = diplomacyPairKey(a, b),
+    agreement = state.ceasefires[pair];
+  agreement.endYear += 5;
+  agreement.renewals = (agreement.renewals || 0) + 1;
+  state.metrics ??= {};
+  state.metrics.ceasefireRenewals = (state.metrics.ceasefireRenewals || 0) + 1;
+  addLog(`${META[a].name}と${META[b].name}は停戦をさらに5年間延長した。`, '', {
     participants: [a, b],
   });
   return true;
@@ -195,7 +261,7 @@ function breakCeasefire(attacker, defender) {
   state.sanctions[attacker] = state.year + 8;
   state.metrics ??= {};
   state.metrics.betrayals = (state.metrics.betrayals || 0) + 1;
-  state.metrics.betrayalsByNation ??= Object.fromEntries(IDS.map((id) => [id, 0]));
+  state.metrics.betrayalsByNation ??= Object.fromEntries(nationIds().map((id) => [id, 0]));
   state.metrics.betrayalsByNation[attacker] = (state.metrics.betrayalsByNation[attacker] || 0) + 1;
   addLog(
     `${META[attacker].name}が停戦を破って${META[defender].name}へ奇襲を開始し、列国の制裁対象となった。`,
@@ -257,12 +323,17 @@ function bridgeSiteStatus(owner, i) {
   if (!tile || tile.terrain !== 'river')
     return { ok: false, reason: '通常の川にだけ橋を建設できます' };
   if (builtBridgeCount(owner) >= 1) return { ok: false, reason: '一国が建設できる橋は1本までです' };
-  const banks = axisBanks(i, tile.riverAxis);
+  const span = terrainSpanAcross(i, 'river');
+  if (!span || span.tiles.length > 2)
+    return { ok: false, reason: '橋を建設できる川幅は2マスまでです' };
+  const { banks } = span;
   if (banks.length !== 2 || banks.some((bank) => !isConquerableTile(state.tiles[bank])))
     return { ok: false, reason: '両岸に利用できる土地が必要です' };
   if (
     state.tiles.some(
-      (other, index) => ['ford', 'bridge'].includes(other.terrain) && distanceOnGrid(i, index) <= 2,
+      (other, index) =>
+        ['ford', 'bridge'].includes(other.terrain) &&
+        span.tiles.some((river) => distanceOnGrid(river, index) <= 2),
     )
   )
     return { ok: false, reason: '既存の橋・浅瀬から2マス以内には建設できません' };
@@ -282,17 +353,27 @@ function bridgeSiteStatus(owner, i) {
       ok: false,
       reason: '片岸に首都とつながった安定領、対岸に自国領か中立地が必要です',
     };
-  return { ok: true, reason: '' };
+  const multiplier = span.tiles.length;
+  return {
+    ok: true,
+    reason: '',
+    tiles: span.tiles,
+    banks,
+    multiplier,
+    cost: { gold: BRIDGE_COST.gold * multiplier, food: BRIDGE_COST.food * multiplier },
+  };
 }
 function constructBridge(owner, i) {
   const status = bridgeSiteStatus(owner, i),
     resources = owner === 'player' ? state : state.factions[owner];
   if (!status.ok || !resources) return false;
-  if (resources.gold < BRIDGE_COST.gold || resources.food < BRIDGE_COST.food) return false;
-  resources.gold -= BRIDGE_COST.gold;
-  resources.food -= BRIDGE_COST.food;
-  state.tiles[i].terrain = 'bridge';
-  state.tiles[i].bridgeBuilder = owner;
+  if (resources.gold < status.cost.gold || resources.food < status.cost.food) return false;
+  resources.gold -= status.cost.gold;
+  resources.food -= status.cost.food;
+  for (const bridge of status.tiles) {
+    state.tiles[bridge].terrain = 'bridge';
+    state.tiles[bridge].bridgeBuilder = owner;
+  }
   return true;
 }
 function playerActionTargetValid(action, i) {
@@ -307,6 +388,14 @@ function playerActionTargetValid(action, i) {
   if (action === 'demolish')
     return t.owner === 'player' && !!t.building && !t.capital && t.occupation !== 2;
   if (action === 'bridge') return bridgeSiteStatus('player', i).ok;
+  if (action === 'garrison')
+    return (
+      t.owner === 'player' &&
+      !t.occupation &&
+      t.supplyStatus !== 'cut' &&
+      isConquerableTile(t) &&
+      garrisonLocation('player') !== i
+    );
   if (BUILDINGS[action]) return t.owner === 'player' && !t.building && t.occupation !== 2;
   return false;
 }
@@ -317,10 +406,30 @@ function playerActionStatus(action, i) {
   if (state.orders < 1) return { ok: false, reason: '今年の命令を使い切りました' };
   if (action === 'settle' && (state.gold < 10 || state.food < 8 || state.population < 2))
     return { ok: false, reason: '開拓に必要な物資または民が足りません' };
-  if (action === 'invade' && state.army < 5)
+  if (action === 'invade' && invasionArmyStrength(i, 'player') < 5)
     return { ok: false, reason: '侵攻には兵力5以上が必要です' };
-  if (action === 'bridge' && (state.gold < BRIDGE_COST.gold || state.food < BRIDGE_COST.food))
-    return { ok: false, reason: '架橋に必要な金貨または食料が足りません' };
+  if (action === 'bridge') {
+    const bridge = bridgeSiteStatus('player', i);
+    if (state.gold < bridge.cost.gold || state.food < bridge.cost.food)
+      return { ok: false, reason: '架橋に必要な金貨または食料が足りません' };
+  }
+  if (action === 'garrison') {
+    const current = garrisonLocation('player');
+    if (current < 0) {
+      const availableYear = state.garrisonFormationYears?.player || 0,
+        cost = garrisonFormationCost();
+      if (state.year < availableYear)
+        return { ok: false, reason: `駐屯兵団を再編成できるのは${availableYear}年からです` };
+      if (state.gold < cost.gold || state.food < cost.food || state.population <= cost.population)
+        return { ok: false, reason: '駐屯兵団の編成に必要な資源または民が足りません' };
+    } else {
+      const availableYear = state.garrisonMoveYears?.player || 0;
+      if (state.year < availableYear)
+        return { ok: false, reason: `駐屯兵団を再移動できるのは${availableYear}年からです` };
+      if (state.gold < GARRISON_MOVE_COST.gold || state.food < GARRISON_MOVE_COST.food)
+        return { ok: false, reason: '駐屯兵団の移動に必要な資源が足りません' };
+    }
+  }
   if (BUILDINGS[action] && state.gold < BUILDINGS[action].cost)
     return { ok: false, reason: '建設に必要な金貨が足りません' };
   return { ok: true, reason: '' };
@@ -340,6 +449,8 @@ function playerActionLabel(action, i) {
   if (action === 'invade') return `${META[tile.owner].name}への侵攻`;
   if (action === 'demolish') return `${BUILDINGS[tile.building]?.name || '建物'}の撤去`;
   if (action === 'bridge') return '橋の建設';
+  if (action === 'garrison')
+    return garrisonLocation('player') < 0 ? '駐屯兵団の編成' : '駐屯兵団の移動';
   if (BUILDINGS[action]) return `${BUILDINGS[action].name}の建設`;
   return '直前の命令';
 }
@@ -412,6 +523,7 @@ function performPlayerAction(action, i) {
     state.population--;
     t.owner = 'player';
     t.isolation = 0;
+    t.supplyStatus = 'full';
     t.occupation = 1;
     useOrder();
     addLog(`${TERRAIN[t.terrain].name}に開拓団が旗を立て、安定化を開始した。`, 'good');
@@ -453,6 +565,29 @@ function performPlayerAction(action, i) {
     return recordPlayerUndo(before, key, label, {
       ok: true,
       message: '橋を建設しました',
+    });
+  }
+  if (action === 'garrison') {
+    state.garrisons ??= {};
+    const current = garrisonLocation('player'),
+      formation = current < 0,
+      cost = formation ? garrisonFormationCost() : GARRISON_MOVE_COST;
+    state.gold -= cost.gold;
+    state.food -= cost.food;
+    if (formation) state.population -= cost.population;
+    state.garrisons.player = i;
+    if (!formation) {
+      state.garrisonMoveYears ??= {};
+      state.garrisonMoveYears.player = state.year + 2;
+    }
+    state.metrics.garrisonsFormed = (state.metrics.garrisonsFormed || 0) + (formation ? 1 : 0);
+    state.metrics.garrisonsMoved = (state.metrics.garrisonsMoved || 0) + (formation ? 0 : 1);
+    state.metrics.garrisonGoldSpent = (state.metrics.garrisonGoldSpent || 0) + cost.gold;
+    state.metrics.garrisonFoodSpent = (state.metrics.garrisonFoodSpent || 0) + cost.food;
+    useOrder();
+    return recordPlayerUndo(before, key, label, {
+      ok: true,
+      message: formation ? '駐屯兵団を編成しました' : '駐屯兵団を移動しました',
     });
   }
   if (building) {
@@ -508,14 +643,58 @@ function support(i, id) {
     ).length * 3
   );
 }
+function combatCalculation(
+  attacker,
+  target,
+  { surprise = false, attackRoll = 0, defenseRoll = 0 } = {},
+) {
+  const origin = invasionOrigin(target, attacker),
+    nationalArmy = attacker === 'player' ? state.army : state.factions[attacker]?.army || 0,
+    baseArmy = origin.cutOff ? tileDefense(origin.index) : nationalArmy,
+    attackRate = attacker === 'player' ? 0.7 : 0.68,
+    armyAttack = Math.floor(baseArmy * attackRate),
+    supportBonus = support(target, attacker),
+    surpriseBonus = surprise ? 2 : 0,
+    baseDefense = tileDefense(target),
+    crossingBonus = crossingDefenseBonus(attacker, target),
+    attack = armyAttack + supportBonus + surpriseBonus + attackRoll,
+    defense = baseDefense + crossingBonus + defenseRoll,
+    terrainLoss = terrainLossPenalty(target);
+  return {
+    attacker,
+    target,
+    origin: origin.index,
+    cutOffOrigin: origin.cutOff,
+    nationalArmy,
+    baseArmy,
+    attackRate,
+    armyAttack,
+    supportBonus,
+    surpriseBonus,
+    attackRoll,
+    attack,
+    baseDefense,
+    crossingBonus,
+    defenseRoll,
+    defense,
+    terrainLoss,
+    victory: attack >= defense,
+    victoryLoss: Math.max(1, Math.ceil(defense / 5)) + terrainLoss,
+    failureLoss: Math.max(2, Math.ceil(defense / 3)) + terrainLoss,
+  };
+}
+function rollCombat(attacker, target, options = {}) {
+  const defenseRoll = rand(5),
+    attackRoll = rand(5);
+  return combatCalculation(attacker, target, { ...options, attackRoll, defenseRoll });
+}
 function playerInvade(i, surprise = false) {
   const t = state.tiles[i],
     enemy = t.owner,
-    def = tileDefense(i) + crossingDefenseBonus('player', i) + rand(5),
-    attack = Math.floor(state.army * 0.7) + support(i, 'player') + rand(5) + (surprise ? 2 : 0);
+    combat = rollCombat('player', i, { surprise });
   useOrder();
-  if (attack >= def) {
-    const loss = Math.min(state.army, Math.max(1, Math.ceil(def / 5)) + terrainLossPenalty(i));
+  if (combat.victory) {
+    const loss = Math.min(state.army, combat.victoryLoss);
     state.army -= loss;
     let defenderLoss = 0;
     if (state.factions[enemy]) {
@@ -528,7 +707,7 @@ function playerInvade(i, surprise = false) {
     capture(i, 'player');
     return { ok: true, message: '敵領を占領しました', outcome: 'victory' };
   } else {
-    const loss = Math.min(state.army, Math.max(2, Math.ceil(def / 3)) + terrainLossPenalty(i));
+    const loss = Math.min(state.army, combat.failureLoss);
     state.army -= loss;
     recordWarBattle('player', enemy, loss, 0);
     addLog(`${META[enemy].name}への侵攻は失敗し、兵${loss}人を失った。`, 'war');
@@ -595,6 +774,7 @@ function annexRelocationLands(loser, winner, oldCapital, count) {
     const tile = state.tiles[candidates[0]];
     tile.owner = winner;
     tile.isolation = 0;
+    tile.supplyStatus = 'full';
     tile.occupation = 2;
     tile.fortIdle = 0;
     tile.capital = false;
@@ -617,6 +797,7 @@ function establishNewCapital(loser, winner) {
   tile.capital = true;
   tile.building = 'capital';
   tile.isolation = 0;
+  tile.supplyStatus = 'full';
   tile.occupation = 0;
   tile.fortIdle = 0;
   return i;
@@ -656,9 +837,17 @@ function capture(i, winner) {
     loser = t.owner,
     capital = t.capital,
     formerLand = land(loser);
+  if (garrisonLocation(loser) === i) {
+    delete state.garrisons[loser];
+    state.garrisonFormationYears ??= {};
+    state.garrisonFormationYears[loser] = state.year + 5;
+    state.metrics.garrisonsLost = (state.metrics.garrisonsLost || 0) + 1;
+    if (loser === 'player') toast('駐屯兵団が領土とともに失われました');
+  }
   recordCapture(t);
   t.owner = winner;
   t.isolation = 0;
+  t.supplyStatus = 'full';
   t.occupation = 2;
   t.fortIdle = 0;
   if (capital) {
@@ -680,12 +869,16 @@ function defeatFaction(id, winner) {
   const f = state.factions[id];
   if (!f || !f.alive) return;
   f.alive = false;
+  if (state.garrisons) delete state.garrisons[id];
+  if (state.garrisonFormationYears) delete state.garrisonFormationYears[id];
+  if (state.garrisonMoveYears) delete state.garrisonMoveYears[id];
   clearWarFatigueFor(id);
   clearDiplomacyFor(id);
   state.tiles.forEach((t) => {
     if (t.owner === id) {
       t.owner = 'neutral';
       t.isolation = 0;
+      t.supplyStatus = 'full';
       t.occupation = 0;
       t.fortIdle = 0;
     }
@@ -704,7 +897,7 @@ function canOfferAutoSettlement() {
     !state.playerDefeated &&
     !state.autoSettlement &&
     !state.autoSettlementDeclined &&
-    ['red', 'blue', 'ochre'].every((id) => !state.factions[id].alive) &&
+    aiNationIds().every((id) => !state.factions[id].alive) &&
     state.tiles.some((t) => t.owner === 'neutral')
   );
 }
@@ -777,6 +970,7 @@ function runAutoSettlementYear() {
     state.population--;
     tile.owner = 'player';
     tile.isolation = 0;
+    tile.supplyStatus = 'full';
     tile.occupation = 1;
     useOrder();
     settled++;
